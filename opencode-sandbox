@@ -74,6 +74,9 @@ EOF
 parse_config() {
     NETWORK_HOSTS=()
     FILESYSTEM_MOUNTS=()
+    PROXY_HTTP=""
+    PROXY_HTTPS=""
+    PROXY_NO=""
     
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_warn "Config file not found: $CONFIG_FILE"
@@ -94,12 +97,26 @@ parse_config() {
             section=""
             [[ "$line" == *"network"* || "$line" == *"NETWORK"* ]] && section="network"
             [[ "$line" == *"filesystem"* || "$line" == *"FILESYSTEM"* ]] && section="filesystem"
+            [[ "$line" == *"proxy"* || "$line" == *"PROXY"* ]] && section="proxy"
             continue
         fi
         
         case "$section" in
             network)    NETWORK_HOSTS+=("$line") ;;
             filesystem) FILESYSTEM_MOUNTS+=("$line") ;;
+            proxy)
+                # Parse key=value pairs for proxy settings
+                if [[ "$line" =~ ^http_proxy[[:space:]]*= ]]; then
+                    PROXY_HTTP="${line#*=}"
+                    PROXY_HTTP=$(echo "$PROXY_HTTP" | xargs)  # trim whitespace
+                elif [[ "$line" =~ ^https_proxy[[:space:]]*= ]]; then
+                    PROXY_HTTPS="${line#*=}"
+                    PROXY_HTTPS=$(echo "$PROXY_HTTPS" | xargs)
+                elif [[ "$line" =~ ^no_proxy[[:space:]]*= ]]; then
+                    PROXY_NO="${line#*=}"
+                    PROXY_NO=$(echo "$PROXY_NO" | xargs)
+                fi
+                ;;
         esac
     done < "$CONFIG_FILE"
 }
@@ -265,6 +282,28 @@ run_sandbox() {
     env_args+=("-e" "ALLOWED_HOSTS=$hosts_csv")
     env_args+=("-e" "TERM=$TERM")
     [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
+    
+    # Proxy configuration (if set)
+    if [[ -n "$PROXY_HTTP" || -n "$PROXY_HTTPS" ]]; then
+        echo ""
+        log_info "Proxy configuration:"
+        if [[ -n "$PROXY_HTTP" ]]; then
+            env_args+=("-e" "http_proxy=$PROXY_HTTP")
+            env_args+=("-e" "HTTP_PROXY=$PROXY_HTTP")
+            log_info "  ✓ http_proxy=$PROXY_HTTP"
+        fi
+        if [[ -n "$PROXY_HTTPS" ]]; then
+            env_args+=("-e" "https_proxy=$PROXY_HTTPS")
+            env_args+=("-e" "HTTPS_PROXY=$PROXY_HTTPS")
+            log_info "  ✓ https_proxy=$PROXY_HTTPS"
+        fi
+        if [[ -n "$PROXY_NO" ]]; then
+            env_args+=("-e" "no_proxy=$PROXY_NO")
+            env_args+=("-e" "NO_PROXY=$PROXY_NO")
+            log_info "  ✓ no_proxy=$PROXY_NO"
+        fi
+        echo ""
+    fi
     
     # Run container with a name so we can attach to it later
     docker run --rm -it \

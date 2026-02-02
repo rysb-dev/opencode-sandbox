@@ -29,6 +29,29 @@ api.github.com
 raw.githubusercontent.com
 
 # -----------------------------------------------------------------------------
+# PROXY CONFIGURATION (Optional)
+# -----------------------------------------------------------------------------
+# Configure HTTP/HTTPS proxy for corporate networks.
+# Leave commented out to disable proxy support.
+#
+# http_proxy   - Proxy URL for HTTP connections
+# https_proxy  - Proxy URL for HTTPS connections  
+# no_proxy     - Comma-separated list of hosts to bypass proxy
+#
+# Examples:
+#   http_proxy=http://proxy.company.com:8080
+#   https_proxy=http://proxy.company.com:8080
+#   no_proxy=localhost,127.0.0.1,.company.com,intranet.local
+#
+# Note: If your proxy requires authentication:
+#   http_proxy=http://username:password@proxy.company.com:8080
+
+[proxy]
+# http_proxy=http://proxy.company.com:8080
+# https_proxy=http://proxy.company.com:8080
+# no_proxy=localhost,127.0.0.1,.internal.company.com
+
+# -----------------------------------------------------------------------------
 # FILESYSTEM WHITELIST  
 # -----------------------------------------------------------------------------
 # Additional directories to mount into the sandbox (one per line).
