@@ -99,6 +99,22 @@ Or directly edit `~/.config/opencode-sandbox/config`:
 # /path/to/dir:rw    - read-write
 ```
 
+### Corporate Proxy Configuration
+
+If your network requires a proxy to access the internet (common in corporate environments), configure it in the `[proxy]` section:
+
+```ini
+[proxy]
+http_proxy=http://proxy.company.com:8080
+https_proxy=http://proxy.company.com:8080
+no_proxy=localhost,127.0.0.1,.internal.company.com,intranet.local
+```
+
+**How it works:**
+- The sandbox's squid proxy routes whitelisted traffic through your corporate proxy
+- `no_proxy` domains are accessed directly (useful for intranet hosts)
+- Both the domain whitelist AND corporate proxy rules are enforced
+
 ### Default Allowed Domains
 
 The default configuration allows:

@@ -117,6 +117,19 @@ storage.googleapis.com
 # api.example.com   - matches only api.example.com
 
 
+[proxy]
+# Corporate/upstream proxy configuration (optional)
+# If your network requires a proxy to reach the internet, configure it here.
+# The sandbox's squid proxy will route traffic through your corporate proxy.
+#
+# http_proxy=http://proxy.company.com:8080
+# https_proxy=http://proxy.company.com:8080
+# no_proxy=localhost,127.0.0.1,.internal.company.com,intranet.local
+#
+# Note: no_proxy domains will be accessed directly, bypassing the upstream proxy.
+# This is useful for internal/intranet hosts that don't need the corporate proxy.
+
+
 [filesystem]
 # Additional directories to mount (read-only by default)
 # Format:
@@ -137,6 +150,9 @@ CONFIGEOF
 parse_config() {
     NETWORK_HOSTS=()
     FILESYSTEM_MOUNTS=()
+    UPSTREAM_PROXY_HOST=""
+    UPSTREAM_PROXY_PORT=""
+    NO_PROXY_DOMAINS=""
 
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_warn "Config file not found: $CONFIG_FILE"
@@ -154,12 +170,41 @@ parse_config() {
             section=""
             [[ "$line" == *"network"* || "$line" == *"NETWORK"* ]] && section="network"
             [[ "$line" == *"filesystem"* || "$line" == *"FILESYSTEM"* ]] && section="filesystem"
+            [[ "$line" == *"proxy"* || "$line" == *"PROXY"* ]] && section="proxy"
             continue
         fi
 
         case "$section" in
             network)    NETWORK_HOSTS+=("$line") ;;
             filesystem) FILESYSTEM_MOUNTS+=("$line") ;;
+            proxy)
+                # Parse key=value pairs for proxy settings
+                if [[ "$line" =~ ^http_proxy[[:space:]]*= ]]; then
+                    local proxy_url="${line#*=}"
+                    proxy_url=$(echo "$proxy_url" | xargs)  # trim whitespace
+                    # Parse host:port from URL (http://host:port or host:port)
+                    proxy_url="${proxy_url#http://}"
+                    proxy_url="${proxy_url#https://}"
+                    UPSTREAM_PROXY_HOST="${proxy_url%%:*}"
+                    UPSTREAM_PROXY_PORT="${proxy_url##*:}"
+                    # If no port specified, default to 3128
+                    [[ "$UPSTREAM_PROXY_HOST" == "$UPSTREAM_PROXY_PORT" ]] && UPSTREAM_PROXY_PORT="3128"
+                elif [[ "$line" =~ ^https_proxy[[:space:]]*= ]]; then
+                    # Only use https_proxy if http_proxy not already set
+                    if [[ -z "$UPSTREAM_PROXY_HOST" ]]; then
+                        local proxy_url="${line#*=}"
+                        proxy_url=$(echo "$proxy_url" | xargs)
+                        proxy_url="${proxy_url#http://}"
+                        proxy_url="${proxy_url#https://}"
+                        UPSTREAM_PROXY_HOST="${proxy_url%%:*}"
+                        UPSTREAM_PROXY_PORT="${proxy_url##*:}"
+                        [[ "$UPSTREAM_PROXY_HOST" == "$UPSTREAM_PROXY_PORT" ]] && UPSTREAM_PROXY_PORT="3128"
+                    fi
+                elif [[ "$line" =~ ^no_proxy[[:space:]]*= ]]; then
+                    NO_PROXY_DOMAINS="${line#*=}"
+                    NO_PROXY_DOMAINS=$(echo "$NO_PROXY_DOMAINS" | xargs)
+                fi
+                ;;
         esac
     done < "$CONFIG_FILE"
 }
@@ -228,6 +273,17 @@ generate_compose_file() {
         fi
     done
 
+    # Build proxy environment variables for upstream proxy
+    local proxy_env=""
+    if [[ -n "$UPSTREAM_PROXY_HOST" ]]; then
+        proxy_env+="    environment:"$'\n'
+        proxy_env+="      - UPSTREAM_PROXY_HOST=${UPSTREAM_PROXY_HOST}"$'\n'
+        proxy_env+="      - UPSTREAM_PROXY_PORT=${UPSTREAM_PROXY_PORT:-3128}"$'\n'
+        if [[ -n "$NO_PROXY_DOMAINS" ]]; then
+            proxy_env+="      - NO_PROXY_DOMAINS=${NO_PROXY_DOMAINS}"$'\n'
+        fi
+    fi
+
     cat > "$compose_file" << EOF
 # Auto-generated - do not edit directly
 services:
@@ -240,7 +296,7 @@ services:
       - internal
     volumes:
       - ${domains_file}:/etc/squid/allowed_domains.txt:ro
-    healthcheck:
+${proxy_env}    healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 3128 || exit 1"]
       interval: 3s
       timeout: 2s
@@ -445,6 +501,15 @@ run_sandbox() {
         for host in "${NETWORK_HOSTS[@]}"; do
             log_info "  ✓ $host"
         done
+    fi
+
+    # Show upstream proxy info if configured
+    if [[ -n "$UPSTREAM_PROXY_HOST" ]]; then
+        echo ""
+        log_info "Upstream proxy: ${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT:-3128}"
+        if [[ -n "$NO_PROXY_DOMAINS" ]]; then
+            log_info "No proxy: ${NO_PROXY_DOMAINS}"
+        fi
     fi
 
     # Generate config files
