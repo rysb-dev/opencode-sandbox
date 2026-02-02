@@ -3,7 +3,7 @@
 # OpenCode Sandbox Launcher
 # =============================================================================
 # Usage: opencode-sandbox [project-directory]
-# 
+#
 # Runs opencode in a Docker container with:
 #   - Network restricted to whitelisted hosts only
 #   - Filesystem restricted to specified directories only
@@ -77,7 +77,7 @@ parse_config() {
     PROXY_HTTP=""
     PROXY_HTTPS=""
     PROXY_NO=""
-    
+
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_warn "Config file not found: $CONFIG_FILE"
         log_info "Using default configuration"
@@ -85,13 +85,13 @@ parse_config() {
         NETWORK_HOSTS=("api.anthropic.com" "api.openai.com" "github.com")
         return
     fi
-    
+
     local section=""
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip empty lines and comments
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         line=$(echo "$line" | xargs)  # trim whitespace
-        
+
         # Check for section headers
         if [[ "$line" =~ ^\[.*\]$ ]]; then
             section=""
@@ -100,7 +100,7 @@ parse_config() {
             [[ "$line" == *"proxy"* || "$line" == *"PROXY"* ]] && section="proxy"
             continue
         fi
-        
+
         case "$section" in
             network)    NETWORK_HOSTS+=("$line") ;;
             filesystem) FILESYSTEM_MOUNTS+=("$line") ;;
@@ -126,22 +126,22 @@ parse_config() {
 # -----------------------------------------------------------------------------
 build_image() {
     local force_rebuild="${1:-false}"
-    
+
     if [[ "$force_rebuild" == "true" ]] || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
         log_info "Building sandbox Docker image..."
-        
+
         # Find the Dockerfile location
         local dockerfile_dir="$SCRIPT_DIR"
         if [[ ! -f "$dockerfile_dir/Dockerfile" ]]; then
             # Try config directory
             dockerfile_dir="$CONFIG_DIR"
         fi
-        
+
         if [[ ! -f "$dockerfile_dir/Dockerfile" ]]; then
             log_error "Dockerfile not found in $SCRIPT_DIR or $CONFIG_DIR"
             exit 1
         fi
-        
+
         docker build --no-cache -t "$IMAGE_NAME" "$dockerfile_dir"
         log_success "Image built successfully"
     fi
@@ -154,7 +154,7 @@ open_shell() {
     # Find running sandbox container
     local container_id
     container_id=$(docker ps -q -f "name=$CONTAINER_NAME" 2>/dev/null)
-    
+
     if [[ -z "$container_id" ]]; then
         log_error "No running sandbox found."
         echo ""
@@ -165,11 +165,11 @@ open_shell() {
         echo "  opencode-sandbox shell"
         exit 1
     fi
-    
+
     log_info "Attaching shell to running sandbox..."
     log_info "Type 'exit' to close this shell (sandbox will keep running)"
     echo ""
-    
+
     # Attach an interactive bash shell as the coder user
     docker exec -it "$container_id" gosu coder bash
 }
@@ -184,7 +184,7 @@ update_opencode() {
     build_image true
     echo ""
     log_success "Update complete!"
-    
+
     # Show new version
     local version=$(docker run --rm "$IMAGE_NAME" opencode --version 2>/dev/null || echo "unknown")
     log_info "OpenCode version: $version"
@@ -197,20 +197,20 @@ run_sandbox() {
     local project_dir="${1:-$(pwd)}"
     local skip_firewall="${SKIP_FIREWALL:-false}"
     local no_network="${NO_NETWORK:-false}"
-    
+
     # Resolve to absolute path
     project_dir=$(cd "$project_dir" 2>/dev/null && pwd) || {
         log_error "Directory not found: $project_dir"
         exit 1
     }
-    
+
     log_header "OpenCode Sandbox"
     echo ""
     log_info "Project: $project_dir"
-    
+
     # Parse config
     parse_config
-    
+
     # Build hosts list
     local hosts_csv=""
     if [[ "$no_network" == "true" ]]; then
@@ -225,41 +225,49 @@ run_sandbox() {
             hosts_csv+="$host"
         done
     fi
-    
+
     # Build volume mounts
     local -a volume_args=()
-    
+
     # Project directory (always read-write)
     volume_args+=("-v" "$project_dir:/workspace:rw")
-    
+
     # OpenCode config/cache directories (persistent across runs)
     local opencode_config="$HOME/.config/opencode"
     local opencode_cache="$HOME/.cache/opencode"
     local opencode_data="$HOME/.local/share/opencode"
     local opencode_state="$HOME/.local/state/opencode"
-    
-    mkdir -p "$opencode_config" "$opencode_cache" "$opencode_data" "$opencode_state"
-    
-    volume_args+=("-v" "$opencode_config:/home/coder/.config/opencode:rw")
+
+    mkdir -p "$opencode_cache" "$opencode_data" "$opencode_state"
+
+    # Only mount opencode config if user has a valid config.json
+    # Otherwise, use the container's built-in default (requires permission for all tools)
+    if [[ -f "$opencode_config/config.json" ]]; then
+        volume_args+=("-v" "$opencode_config:/home/coder/.config/opencode:rw")
+        log_info "Using host opencode config: $opencode_config/config.json"
+    else
+        log_info "No host config.json found - using container default (tool calls require permission)"
+    fi
+
     volume_args+=("-v" "$opencode_cache:/home/coder/.cache/opencode:rw")
     volume_args+=("-v" "$opencode_data:/home/coder/.local/share/opencode:rw")
     volume_args+=("-v" "$opencode_state:/home/coder/.local/state/opencode:rw")
-    
+
     # Git config (read-only)
     [[ -f "$HOME/.gitconfig" ]] && volume_args+=("-v" "$HOME/.gitconfig:/home/coder/.gitconfig:ro")
     [[ -d "$HOME/.config/git" ]] && volume_args+=("-v" "$HOME/.config/git:/home/coder/.config/git:ro")
-    
+
     echo ""
     log_info "Filesystem access:"
     log_info "  ✓ $project_dir (read-write)"
-    
+
     # Additional filesystem mounts from config
     for mount in "${FILESYSTEM_MOUNTS[@]}"; do
         local host_path="${mount%%:*}"
         local mode="ro"
         [[ "$mount" == *":rw" ]] && mode="rw"
         host_path="${host_path%:rw}"
-        
+
         if [[ -d "$host_path" ]]; then
             local container_path="/mnt$(echo "$host_path" | tr ' ' '_')"
             volume_args+=("-v" "$host_path:$container_path:$mode")
@@ -268,21 +276,21 @@ run_sandbox() {
             log_warn "  ✗ $host_path (not found, skipping)"
         fi
     done
-    
+
     # Ensure image exists
     build_image
-    
+
     echo ""
     log_success "Starting sandboxed opencode..."
     log_info "Press Ctrl+C to exit"
     echo ""
-    
+
     # Environment variables
     local -a env_args=()
     env_args+=("-e" "ALLOWED_HOSTS=$hosts_csv")
     env_args+=("-e" "TERM=$TERM")
     [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
-    
+
     # Proxy configuration (if set)
     if [[ -n "$PROXY_HTTP" || -n "$PROXY_HTTPS" ]]; then
         echo ""
@@ -304,7 +312,7 @@ run_sandbox() {
         fi
         echo ""
     fi
-    
+
     # Run container with a name so we can attach to it later
     docker run --rm -it \
         --name "$CONTAINER_NAME" \
@@ -324,15 +332,15 @@ main() {
         log_error "Docker not found. Please install Docker Desktop."
         exit 1
     fi
-    
+
     if ! docker info &>/dev/null 2>&1; then
         log_error "Docker daemon not running. Please start Docker Desktop."
         exit 1
     fi
-    
+
     # Parse arguments
     local project_dir=""
-    
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)
@@ -370,7 +378,7 @@ main() {
                 ;;
         esac
     done
-    
+
     run_sandbox "$project_dir"
 }
 
