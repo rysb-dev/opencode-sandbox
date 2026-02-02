@@ -5,7 +5,7 @@
 # Usage: opencode-sandbox [project-directory]
 #
 # Runs opencode in a Docker container with:
-#   - Network restricted to whitelisted hosts only
+#   - Network restricted to whitelisted domains via squid proxy
 #   - Filesystem restricted to specified directories only
 #   - Tool calls require explicit permission
 #
@@ -18,8 +18,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode-sandbox"
 CONFIG_FILE="$CONFIG_DIR/config"
-IMAGE_NAME="opencode-sandbox"
-CONTAINER_NAME="opencode-sandbox-session"
+COMPOSE_PROJECT="opencode-sandbox"
+PROXY_CONTAINER="opencode-sandbox-proxy"
+AGENT_CONTAINER="opencode-sandbox-agent"
 
 # Colors
 RED='\033[0;31m'
@@ -36,36 +37,111 @@ log_error()   { echo -e "${RED}[sandbox]${NC} $1" >&2; }
 log_header()  { echo -e "${BOLD}$1${NC}"; }
 
 show_help() {
-    cat << EOF
-${BOLD}OpenCode Sandbox${NC} - Run opencode in a secure, isolated environment
+    echo -e "${BOLD}OpenCode Sandbox${NC} - Run opencode in a secure, network-isolated environment"
+    echo ""
+    echo -e "${BOLD}USAGE:${NC}"
+    echo "    opencode-sandbox [OPTIONS] [PROJECT_DIR]"
+    echo "    opencode-sandbox shell    Open a bash shell in the running sandbox"
+    echo ""
+    echo -e "${BOLD}ARGUMENTS:${NC}"
+    echo "    PROJECT_DIR    Directory to mount as workspace (default: current directory)"
+    echo ""
+    echo -e "${BOLD}COMMANDS:${NC}"
+    echo "    shell          Open a bash shell in the running sandbox container"
+    echo "    stop           Stop all sandbox containers"
+    echo "    update         Update opencode to the latest version (rebuilds image)"
+    echo ""
+    echo -e "${BOLD}OPTIONS:${NC}"
+    echo "    -h, --help     Show this help message"
+    echo "    -b, --build    Force rebuild of Docker images"
+    echo "    -u, --update   Update opencode to latest version (same as 'update')"
+    echo "    -c, --config   Open configuration file in editor"
+    echo "    --no-network   Disable all network access"
+    echo ""
+    echo -e "${BOLD}CONFIGURATION:${NC}"
+    echo "    Edit: $CONFIG_FILE"
+    echo ""
+    echo "    Network whitelist: Add domains (one per line) under [network]"
+    echo "    Filesystem mounts: Add paths under [filesystem]"
+    echo ""
+    echo -e "${BOLD}EXAMPLES:${NC}"
+    echo "    opencode-sandbox                    # Run in current directory"
+    echo "    opencode-sandbox ~/Projects/myapp   # Run in specific directory"
+    echo "    opencode-sandbox shell              # Open shell in running sandbox"
+    echo "    opencode-sandbox stop               # Stop all sandbox containers"
+    echo "    opencode-sandbox update             # Update opencode to latest"
+    echo "    opencode-sandbox --build            # Rebuild images and run"
+    echo ""
+}
 
-${BOLD}USAGE:${NC}
-    opencode-sandbox [OPTIONS] [PROJECT_DIR]
-    opencode-sandbox shell    Open a bash shell in the running sandbox
+# -----------------------------------------------------------------------------
+# Ensure config directory and files exist
+# -----------------------------------------------------------------------------
+ensure_config() {
+    if [[ ! -d "$CONFIG_DIR" ]]; then
+        log_info "Creating configuration directory: $CONFIG_DIR"
+        mkdir -p "$CONFIG_DIR"
+    fi
 
-${BOLD}ARGUMENTS:${NC}
-    PROJECT_DIR    Directory to mount as workspace (default: current directory)
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_info "Creating default configuration file"
+        cat > "$CONFIG_FILE" << 'CONFIGEOF'
+# =============================================================================
+# OpenCode Sandbox Configuration
+# =============================================================================
+# Network whitelist: Domains opencode can connect to (one per line)
+# Filesystem mounts: Additional directories to mount (one per line)
+# =============================================================================
 
-${BOLD}COMMANDS:${NC}
-    shell          Open a bash shell in the running sandbox container
+[network]
+# LLM API providers (leading dot matches subdomains)
+.anthropic.com
+.openai.com
 
-${BOLD}OPTIONS:${NC}
-    -h, --help     Show this help message
-    -u, --update   Update opencode to the latest version (rebuilds image)
-    -c, --config   Open configuration file in editor
-    --no-network   Disable all network access
-    --skip-firewall Skip firewall setup (allows all network, for debugging)
+# GitHub (for git operations, Copilot, API)
+.github.com
+.githubusercontent.com
 
-${BOLD}CONFIGURATION:${NC}
-    Edit: $CONFIG_FILE
+# Package registries
+.npmjs.org
+.npmjs.com
+registry.yarnpkg.com
+proxy.golang.org
+sum.golang.org
+storage.googleapis.com
+.pypi.org
+.pythonhosted.org
 
-${BOLD}EXAMPLES:${NC}
-    opencode-sandbox                    # Run in current directory
-    opencode-sandbox ~/Projects/myapp   # Run in specific directory
-    opencode-sandbox shell              # Open shell in running sandbox
-    opencode-sandbox --update           # Update opencode and rebuild image
+# Add additional domains below (use leading dot for subdomains):
+# .example.com      - matches example.com and *.example.com
+# api.example.com   - matches only api.example.com
 
-EOF
+
+[proxy]
+# Corporate/upstream proxy configuration (optional)
+# If your network requires a proxy to reach the internet, configure it here.
+# The sandbox's squid proxy will route traffic through your corporate proxy.
+#
+# http_proxy=http://proxy.company.com:8080
+# https_proxy=http://proxy.company.com:8080
+# no_proxy=localhost,127.0.0.1,.internal.company.com,intranet.local
+#
+# Note: no_proxy domains will be accessed directly, bypassing the upstream proxy.
+# This is useful for internal/intranet hosts that don't need the corporate proxy.
+
+
+[filesystem]
+# Additional directories to mount (read-only by default)
+# Format:
+#   /path/to/directory        - mounted read-only
+#   /path/to/directory:rw     - mounted read-write
+#
+# Example:
+#   /Users/yourname/shared-libs
+#   /Users/yourname/other-project:rw
+
+CONFIGEOF
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -74,15 +150,12 @@ EOF
 parse_config() {
     NETWORK_HOSTS=()
     FILESYSTEM_MOUNTS=()
-    PROXY_HTTP=""
-    PROXY_HTTPS=""
-    PROXY_NO=""
+    UPSTREAM_PROXY_HOST=""
+    UPSTREAM_PROXY_PORT=""
+    NO_PROXY_DOMAINS=""
 
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_warn "Config file not found: $CONFIG_FILE"
-        log_info "Using default configuration"
-        # Default hosts if no config
-        NETWORK_HOSTS=("api.anthropic.com" "api.openai.com" "github.com")
         return
     fi
 
@@ -107,14 +180,29 @@ parse_config() {
             proxy)
                 # Parse key=value pairs for proxy settings
                 if [[ "$line" =~ ^http_proxy[[:space:]]*= ]]; then
-                    PROXY_HTTP="${line#*=}"
-                    PROXY_HTTP=$(echo "$PROXY_HTTP" | xargs)  # trim whitespace
+                    local proxy_url="${line#*=}"
+                    proxy_url=$(echo "$proxy_url" | xargs)  # trim whitespace
+                    # Parse host:port from URL (http://host:port or host:port)
+                    proxy_url="${proxy_url#http://}"
+                    proxy_url="${proxy_url#https://}"
+                    UPSTREAM_PROXY_HOST="${proxy_url%%:*}"
+                    UPSTREAM_PROXY_PORT="${proxy_url##*:}"
+                    # If no port specified, default to 3128
+                    [[ "$UPSTREAM_PROXY_HOST" == "$UPSTREAM_PROXY_PORT" ]] && UPSTREAM_PROXY_PORT="3128"
                 elif [[ "$line" =~ ^https_proxy[[:space:]]*= ]]; then
-                    PROXY_HTTPS="${line#*=}"
-                    PROXY_HTTPS=$(echo "$PROXY_HTTPS" | xargs)
+                    # Only use https_proxy if http_proxy not already set
+                    if [[ -z "$UPSTREAM_PROXY_HOST" ]]; then
+                        local proxy_url="${line#*=}"
+                        proxy_url=$(echo "$proxy_url" | xargs)
+                        proxy_url="${proxy_url#http://}"
+                        proxy_url="${proxy_url#https://}"
+                        UPSTREAM_PROXY_HOST="${proxy_url%%:*}"
+                        UPSTREAM_PROXY_PORT="${proxy_url##*:}"
+                        [[ "$UPSTREAM_PROXY_HOST" == "$UPSTREAM_PROXY_PORT" ]] && UPSTREAM_PROXY_PORT="3128"
+                    fi
                 elif [[ "$line" =~ ^no_proxy[[:space:]]*= ]]; then
-                    PROXY_NO="${line#*=}"
-                    PROXY_NO=$(echo "$PROXY_NO" | xargs)
+                    NO_PROXY_DOMAINS="${line#*=}"
+                    NO_PROXY_DOMAINS=$(echo "$NO_PROXY_DOMAINS" | xargs)
                 fi
                 ;;
         esac
@@ -122,47 +210,241 @@ parse_config() {
 }
 
 # -----------------------------------------------------------------------------
-# Build or update Docker image
+# Generate allowed_domains.txt for squid proxy
 # -----------------------------------------------------------------------------
-build_image() {
-    local force_rebuild="${1:-false}"
+generate_allowed_domains() {
+    local domains_file="$CONFIG_DIR/allowed_domains.txt"
 
-    if [[ "$force_rebuild" == "true" ]] || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-        log_info "Building sandbox Docker image..."
+    cat > "$domains_file" << 'EOF'
+# Auto-generated from config - do not edit directly
+# Edit ~/.config/opencode-sandbox/config instead
+EOF
 
-        # Find the Dockerfile location
-        local dockerfile_dir="$SCRIPT_DIR"
-        if [[ ! -f "$dockerfile_dir/Dockerfile" ]]; then
-            # Try config directory
-            dockerfile_dir="$CONFIG_DIR"
+    for host in "${NETWORK_HOSTS[@]}"; do
+        echo "$host" >> "$domains_file"
+    done
+
+    echo "$domains_file"
+}
+
+# -----------------------------------------------------------------------------
+# Generate docker-compose.yml
+# -----------------------------------------------------------------------------
+generate_compose_file() {
+    local project_dir="$1"
+    local domains_file="$2"
+    local compose_file="$CONFIG_DIR/docker-compose.yml"
+
+    # Build volume mounts for agent
+    local volume_mounts=""
+    volume_mounts+="      - ${project_dir}:/workspace:rw"$'\n'
+
+    # OpenCode config directories
+    local opencode_config="$HOME/.config/opencode"
+    local opencode_cache="$HOME/.cache/opencode"
+    local opencode_data="$HOME/.local/share/opencode"
+    local opencode_state="$HOME/.local/state/opencode"
+
+    # Create directories if they don't exist
+    mkdir -p "$opencode_cache" "$opencode_data" "$opencode_state"
+
+    # Mount opencode directories
+    if [[ -d "$opencode_config" ]]; then
+        volume_mounts+="      - ${opencode_config}:/home/coder/.config/opencode:rw"$'\n'
+    fi
+    volume_mounts+="      - ${opencode_cache}:/home/coder/.cache/opencode:rw"$'\n'
+    volume_mounts+="      - ${opencode_data}:/home/coder/.local/share/opencode:rw"$'\n'
+    volume_mounts+="      - ${opencode_state}:/home/coder/.local/state/opencode:rw"$'\n'
+
+    # Git config (read-only)
+    [[ -f "$HOME/.gitconfig" ]] && volume_mounts+="      - ${HOME}/.gitconfig:/home/coder/.gitconfig:ro"$'\n'
+    [[ -d "$HOME/.config/git" ]] && volume_mounts+="      - ${HOME}/.config/git:/home/coder/.config/git:ro"$'\n'
+
+    # Additional filesystem mounts from config
+    for mount in "${FILESYSTEM_MOUNTS[@]}"; do
+        local host_path="${mount%%:*}"
+        local mode="ro"
+        [[ "$mount" == *":rw" ]] && mode="rw"
+        host_path="${host_path%:rw}"
+
+        if [[ -d "$host_path" ]]; then
+            local container_path="/mnt$(echo "$host_path" | tr ' ' '_')"
+            volume_mounts+="      - ${host_path}:${container_path}:${mode}"$'\n'
         fi
+    done
 
-        if [[ ! -f "$dockerfile_dir/Dockerfile" ]]; then
-            log_error "Dockerfile not found in $SCRIPT_DIR or $CONFIG_DIR"
-            exit 1
+    # Build proxy environment variables for upstream proxy
+    local proxy_env=""
+    if [[ -n "$UPSTREAM_PROXY_HOST" ]]; then
+        proxy_env+="    environment:"$'\n'
+        proxy_env+="      - UPSTREAM_PROXY_HOST=${UPSTREAM_PROXY_HOST}"$'\n'
+        proxy_env+="      - UPSTREAM_PROXY_PORT=${UPSTREAM_PROXY_PORT:-3128}"$'\n'
+        if [[ -n "$NO_PROXY_DOMAINS" ]]; then
+            proxy_env+="      - NO_PROXY_DOMAINS=${NO_PROXY_DOMAINS}"$'\n'
         fi
+    fi
 
-        docker build --no-cache -t "$IMAGE_NAME" "$dockerfile_dir"
-        log_success "Image built successfully"
+    cat > "$compose_file" << EOF
+# Auto-generated - do not edit directly
+services:
+  proxy:
+    build:
+      context: ${SCRIPT_DIR}/proxy
+    container_name: ${PROXY_CONTAINER}
+    networks:
+      - external
+      - internal
+    volumes:
+      - ${domains_file}:/etc/squid/allowed_domains.txt:ro
+${proxy_env}    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3128 || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 5
+      start_period: 2s
+
+  agent:
+    build:
+      context: ${SCRIPT_DIR}/agent
+    container_name: ${AGENT_CONTAINER}
+    stdin_open: true
+    tty: true
+    networks:
+      - internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+    environment:
+      - HTTP_PROXY=http://proxy:3128
+      - HTTPS_PROXY=http://proxy:3128
+      - http_proxy=http://proxy:3128
+      - https_proxy=http://proxy:3128
+      - NO_PROXY=localhost,127.0.0.1
+      - no_proxy=localhost,127.0.0.1
+      - TERM=${TERM:-xterm-256color}
+    volumes:
+${volume_mounts}    working_dir: /workspace
+
+networks:
+  external:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true
+EOF
+
+    echo "$compose_file"
+}
+
+# -----------------------------------------------------------------------------
+# Build Docker images
+# -----------------------------------------------------------------------------
+build_images() {
+    local force="${1:-false}"
+    local compose_file="$2"
+    local no_cache="${3:-false}"
+
+    # Check if images exist
+    local need_build=false
+    if [[ "$force" == "true" ]]; then
+        need_build=true
+    elif ! docker image inspect "${COMPOSE_PROJECT}-proxy" &>/dev/null || \
+         ! docker image inspect "${COMPOSE_PROJECT}-agent" &>/dev/null; then
+        need_build=true
+    fi
+
+    if [[ "$need_build" == "true" ]]; then
+        log_info "Building Docker images..."
+        if [[ "$no_cache" == "true" ]]; then
+            docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --no-cache --quiet
+        else
+            docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --quiet
+        fi
+        log_success "Images built successfully"
     fi
 }
 
 # -----------------------------------------------------------------------------
-# Open shell in running sandbox
+# Update opencode (rebuild with no cache)
 # -----------------------------------------------------------------------------
-open_shell() {
-    # Find running sandbox container
-    local container_id
-    container_id=$(docker ps -q -f "name=$CONTAINER_NAME" 2>/dev/null)
+update_opencode() {
+    log_header "Updating OpenCode"
+    echo ""
 
-    if [[ -z "$container_id" ]]; then
+    # Ensure config exists
+    ensure_config
+
+    # Parse config
+    parse_config
+
+    # Generate config files
+    local domains_file
+    domains_file=$(generate_allowed_domains)
+
+    local compose_file
+    compose_file=$(generate_compose_file "$(pwd)" "$domains_file")
+
+    log_info "Rebuilding agent image with latest opencode..."
+    docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --no-cache agent
+
+    echo ""
+    log_success "Update complete!"
+
+    # Show new version
+    local version
+    version=$(docker run --rm "${COMPOSE_PROJECT}-agent" opencode --version 2>/dev/null || echo "unknown")
+    log_info "OpenCode version: $version"
+}
+
+# -----------------------------------------------------------------------------
+# Start sandbox containers
+# -----------------------------------------------------------------------------
+start_sandbox() {
+    local compose_file="$1"
+
+    log_info "Starting sandbox containers..."
+    docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" up -d --quiet-pull 2>/dev/null
+
+    # Wait for agent to be ready
+    local retries=0
+    while ! docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" &>/dev/null && [[ $retries -lt 30 ]]; do
+        sleep 0.5
+        ((retries++))
+    done
+
+    if ! docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" &>/dev/null; then
+        log_error "Agent container failed to start"
+        docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" logs
+        exit 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Stop sandbox containers
+# -----------------------------------------------------------------------------
+stop_sandbox() {
+    local compose_file="$CONFIG_DIR/docker-compose.yml"
+
+    if [[ -f "$compose_file" ]]; then
+        log_info "Stopping sandbox containers..."
+        docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" down --remove-orphans 2>/dev/null || true
+    else
+        # Fallback: stop by container name
+        docker stop "$AGENT_CONTAINER" "$PROXY_CONTAINER" 2>/dev/null || true
+        docker rm "$AGENT_CONTAINER" "$PROXY_CONTAINER" 2>/dev/null || true
+    fi
+    log_success "Sandbox stopped"
+}
+
+# -----------------------------------------------------------------------------
+# Attach to running sandbox
+# -----------------------------------------------------------------------------
+attach_shell() {
+    if ! docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" &>/dev/null; then
         log_error "No running sandbox found."
         echo ""
         echo "Start a sandbox first with:"
         echo "  opencode-sandbox [project-directory]"
-        echo ""
-        echo "Then in another terminal, run:"
-        echo "  opencode-sandbox shell"
         exit 1
     fi
 
@@ -170,63 +452,16 @@ open_shell() {
     log_info "Type 'exit' to close this shell (sandbox will keep running)"
     echo ""
 
-    # Attach an interactive bash shell as the coder user
-    docker exec -it "$container_id" gosu coder bash
+    docker exec -it "$AGENT_CONTAINER" bash
 }
 
 # -----------------------------------------------------------------------------
-# Update opencode
+# Cleanup on exit
 # -----------------------------------------------------------------------------
-update_opencode() {
-    log_header "Updating OpenCode Sandbox"
+cleanup() {
     echo ""
-
-    # Check if we're in a git repo with the source files
-    local repo_dir=""
-    if [[ -f "$SCRIPT_DIR/Dockerfile" && -f "$SCRIPT_DIR/entrypoint.sh" ]]; then
-        repo_dir="$SCRIPT_DIR"
-    fi
-
-    # Try to update from git repo if available
-    if [[ -n "$repo_dir" && -d "$repo_dir/.git" ]]; then
-        log_info "Found git repository at $repo_dir"
-        log_info "Pulling latest changes..."
-        if (cd "$repo_dir" && git pull --ff-only 2>/dev/null); then
-            log_success "Repository updated"
-        else
-            log_warn "Could not pull updates (you may have local changes)"
-        fi
-
-        # Update installed files from repo
-        log_info "Updating installed files..."
-        cp "$repo_dir/opencode-sandbox" "$CONFIG_DIR/../../../.local/bin/opencode-sandbox" 2>/dev/null || \
-            cp "$repo_dir/opencode-sandbox" "$HOME/.local/bin/opencode-sandbox" 2>/dev/null || true
-        cp "$repo_dir/Dockerfile" "$CONFIG_DIR/" 2>/dev/null || true
-        cp "$repo_dir/entrypoint.sh" "$CONFIG_DIR/" 2>/dev/null || true
-        cp "$repo_dir/opencode.json" "$CONFIG_DIR/" 2>/dev/null || true
-        log_success "Installed files updated"
-    elif [[ -n "$repo_dir" ]]; then
-        # Source files exist but not a git repo - just copy them
-        log_info "Updating installed files from $repo_dir..."
-        cp "$repo_dir/opencode-sandbox" "$HOME/.local/bin/opencode-sandbox" 2>/dev/null || true
-        cp "$repo_dir/Dockerfile" "$CONFIG_DIR/" 2>/dev/null || true
-        cp "$repo_dir/entrypoint.sh" "$CONFIG_DIR/" 2>/dev/null || true
-        cp "$repo_dir/opencode.json" "$CONFIG_DIR/" 2>/dev/null || true
-        log_success "Installed files updated"
-    else
-        log_info "No source repository found - only rebuilding Docker image"
-        log_info "To update scripts, run: cd /path/to/opencode-sandbox && git pull && ./setup.sh"
-    fi
-
-    echo ""
-    log_info "Rebuilding Docker image with latest opencode..."
-    build_image true
-    echo ""
-    log_success "Update complete!"
-
-    # Show new version
-    local version=$(docker run --rm "$IMAGE_NAME" opencode --version 2>/dev/null || echo "unknown")
-    log_info "OpenCode version: $version"
+    log_info "Shutting down sandbox..."
+    stop_sandbox
 }
 
 # -----------------------------------------------------------------------------
@@ -234,7 +469,7 @@ update_opencode() {
 # -----------------------------------------------------------------------------
 run_sandbox() {
     local project_dir="${1:-$(pwd)}"
-    local skip_firewall="${SKIP_FIREWALL:-false}"
+    local force_build="${FORCE_BUILD:-false}"
     local no_network="${NO_NETWORK:-false}"
 
     # Resolve to absolute path
@@ -247,153 +482,65 @@ run_sandbox() {
     echo ""
     log_info "Project: $project_dir"
 
+    # Ensure config exists
+    ensure_config
+
     # Parse config
     parse_config
 
-    # Build hosts list
-    local hosts_csv=""
+    # Handle no-network mode
     if [[ "$no_network" == "true" ]]; then
         log_warn "Network access: DISABLED"
-        hosts_csv=""
-    elif [[ ${#NETWORK_HOSTS[@]} -gt 0 ]]; then
+        NETWORK_HOSTS=()
+    fi
+
+    # Show network whitelist
+    if [[ ${#NETWORK_HOSTS[@]} -gt 0 ]]; then
         echo ""
         log_info "Network whitelist:"
         for host in "${NETWORK_HOSTS[@]}"; do
             log_info "  ✓ $host"
-            [[ -n "$hosts_csv" ]] && hosts_csv+=","
-            hosts_csv+="$host"
         done
     fi
 
-    # Build volume mounts
-    local -a volume_args=()
-
-    # Project directory (always read-write)
-    volume_args+=("-v" "$project_dir:/workspace:rw")
-
-    # OpenCode config/cache directories (persistent across runs)
-    local opencode_config="$HOME/.config/opencode"
-    local opencode_cache="$HOME/.cache/opencode"
-    local opencode_data="$HOME/.local/share/opencode"
-    local opencode_state="$HOME/.local/state/opencode"
-
-    mkdir -p "$opencode_cache" "$opencode_data" "$opencode_state"
-
-    # Only mount opencode config if user has a valid config.json
-    # Otherwise, use the container's built-in default (requires permission for all tools)
-    if [[ -f "$opencode_config/config.json" ]]; then
-        volume_args+=("-v" "$opencode_config:/home/coder/.config/opencode:rw")
-        log_info "Using host opencode config: $opencode_config/config.json"
-    else
-        log_info "No host config.json found - using container default (tool calls require permission)"
-    fi
-
-    volume_args+=("-v" "$opencode_cache:/home/coder/.cache/opencode:rw")
-    volume_args+=("-v" "$opencode_data:/home/coder/.local/share/opencode:rw")
-    volume_args+=("-v" "$opencode_state:/home/coder/.local/state/opencode:rw")
-
-    # Git config (read-only)
-    [[ -f "$HOME/.gitconfig" ]] && volume_args+=("-v" "$HOME/.gitconfig:/home/coder/.gitconfig:ro")
-    [[ -d "$HOME/.config/git" ]] && volume_args+=("-v" "$HOME/.config/git:/home/coder/.config/git:ro")
-
-    # SSH config and keys (read-only) - enables git push/pull via SSH
-    if [[ -d "$HOME/.ssh" ]]; then
-        volume_args+=("-v" "$HOME/.ssh:/home/coder/.ssh:ro")
-        log_info "  ✓ ~/.ssh (read-only, for git SSH access)"
-    fi
-
-    echo ""
-    log_info "Filesystem access:"
-    log_info "  ✓ $project_dir (read-write)"
-
-    # Additional filesystem mounts from config
-    for mount in "${FILESYSTEM_MOUNTS[@]}"; do
-        local host_path="${mount%%:*}"
-        local mode="ro"
-        [[ "$mount" == *":rw" ]] && mode="rw"
-        host_path="${host_path%:rw}"
-
-        if [[ -d "$host_path" ]]; then
-            local container_path="/mnt$(echo "$host_path" | tr ' ' '_')"
-            volume_args+=("-v" "$host_path:$container_path:$mode")
-            log_info "  ✓ $host_path ($mode)"
-        else
-            log_warn "  ✗ $host_path (not found, skipping)"
-        fi
-    done
-
-    # Ensure image exists
-    build_image
-
-    echo ""
-    log_success "Starting sandboxed opencode..."
-    log_info "Press Ctrl+C to exit"
-    echo ""
-
-    # Environment variables
-    local -a env_args=()
-    env_args+=("-e" "ALLOWED_HOSTS=$hosts_csv")
-    env_args+=("-e" "TERM=$TERM")
-    [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
-
-    # SSH agent forwarding - allows git operations without exposing private keys
-    if [[ -n "$SSH_AUTH_SOCK" ]]; then
-        # Check if Docker Desktop's magic socket exists (macOS/Windows Docker Desktop)
-        if [[ -S "/run/host-services/ssh-auth.sock" ]]; then
-            volume_args+=("-v" "/run/host-services/ssh-auth.sock:/ssh-agent")
-            env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
-            log_info "SSH agent: forwarded (Docker Desktop)"
-        elif [[ "$OSTYPE" == "linux-gnu"* ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
-            # On Linux, socket forwarding works natively (no VM in between)
-            volume_args+=("-v" "$SSH_AUTH_SOCK:/ssh-agent")
-            env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
-            log_info "SSH agent: forwarded (Linux)"
-        else
-            # For macOS with Colima/Lima, Unix socket forwarding doesn't work
-            # because sockets can't pass through the Linux VM.
-            # The mounted ~/.ssh directory with keys will be used instead.
-            log_info "SSH agent: using mounted ~/.ssh keys (socket forwarding unavailable)"
-        fi
-    else
-        log_info "SSH: using mounted ~/.ssh keys"
-    fi
-
-    # Proxy configuration (if set)
-    if [[ -n "$PROXY_HTTP" || -n "$PROXY_HTTPS" ]]; then
+    # Show upstream proxy info if configured
+    if [[ -n "$UPSTREAM_PROXY_HOST" ]]; then
         echo ""
-        log_info "Proxy configuration:"
-        if [[ -n "$PROXY_HTTP" ]]; then
-            env_args+=("-e" "http_proxy=$PROXY_HTTP")
-            env_args+=("-e" "HTTP_PROXY=$PROXY_HTTP")
-            log_info "  ✓ http_proxy=$PROXY_HTTP"
+        log_info "Upstream proxy: ${UPSTREAM_PROXY_HOST}:${UPSTREAM_PROXY_PORT:-3128}"
+        if [[ -n "$NO_PROXY_DOMAINS" ]]; then
+            log_info "No proxy: ${NO_PROXY_DOMAINS}"
         fi
-        if [[ -n "$PROXY_HTTPS" ]]; then
-            env_args+=("-e" "https_proxy=$PROXY_HTTPS")
-            env_args+=("-e" "HTTPS_PROXY=$PROXY_HTTPS")
-            log_info "  ✓ https_proxy=$PROXY_HTTPS"
-        fi
-        if [[ -n "$PROXY_NO" ]]; then
-            env_args+=("-e" "no_proxy=$PROXY_NO")
-            env_args+=("-e" "NO_PROXY=$PROXY_NO")
-            log_info "  ✓ no_proxy=$PROXY_NO"
-        fi
-        echo ""
     fi
 
-    # Clean up any existing container with the same name (may be stuck/hung)
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        log_info "Cleaning up existing container..."
-        docker rm -f "$CONTAINER_NAME" &>/dev/null || true
+    # Generate config files
+    local domains_file
+    domains_file=$(generate_allowed_domains)
+
+    local compose_file
+    compose_file=$(generate_compose_file "$project_dir" "$domains_file")
+
+    # Build images if needed
+    build_images "$force_build" "$compose_file"
+
+    # Stop any existing sandbox
+    if docker ps -q -f "name=${AGENT_CONTAINER}" &>/dev/null; then
+        log_info "Stopping existing sandbox..."
+        stop_sandbox
     fi
 
-    # Run container with a name so we can attach to it later
-    docker run --rm -it \
-        --name "$CONTAINER_NAME" \
-        --cap-add=NET_ADMIN \
-        "${env_args[@]}" \
-        "${volume_args[@]}" \
-        "$IMAGE_NAME" \
-        opencode
+    # Set up cleanup trap
+    trap cleanup EXIT INT TERM
+
+    # Start containers
+    start_sandbox "$compose_file"
+
+    echo ""
+    log_success "Sandbox ready!"
+    log_info "Press Ctrl+C to exit and stop the sandbox"
+    echo ""
+
+    # Attach to agent container
+    docker attach "$AGENT_CONTAINER"
 }
 
 # -----------------------------------------------------------------------------
@@ -420,24 +567,29 @@ main() {
                 show_help
                 exit 0
                 ;;
-            -u|--update)
+            -b|--build)
+                export FORCE_BUILD=true
+                shift
+                ;;
+            -u|--update|update)
                 update_opencode
                 exit 0
                 ;;
             -c|--config)
+                ensure_config
                 ${EDITOR:-vim} "$CONFIG_FILE"
                 exit 0
                 ;;
             shell)
-                open_shell
+                attach_shell
+                exit 0
+                ;;
+            stop)
+                stop_sandbox
                 exit 0
                 ;;
             --no-network)
                 export NO_NETWORK=true
-                shift
-                ;;
-            --skip-firewall)
-                export SKIP_FIREWALL=true
                 shift
                 ;;
             -*)

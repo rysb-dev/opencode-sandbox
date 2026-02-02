@@ -1,29 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# OpenCode Sandbox Setup Script
+# OpenCode Sandbox Setup
 # =============================================================================
-# This script installs the opencode-sandbox tool on your system.
+# Installs opencode-sandbox to ~/.local/bin and sets up configuration.
 #
-# What it does:
-#   1. Copies configuration files to ~/.config/opencode-sandbox/
-#   2. Creates a symlink to the launcher script in ~/.local/bin/
-#   3. Builds the Docker image
-#
-# Requirements:
-#   - Docker (Docker Desktop on macOS/Windows, or docker-ce on Linux)
-#   - Bash 4.0+
-#
-# Usage:
-#   ./setup.sh          # Install
-#   ./setup.sh --remove # Uninstall
+# Usage: ./setup.sh [--remove]
 # =============================================================================
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="${HOME}/.local/bin"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode-sandbox"
-BIN_DIR="$HOME/.local/bin"
-IMAGE_NAME="opencode-sandbox"
+SCRIPT_NAME="opencode-sandbox"
 
 # Colors
 RED='\033[0;31m'
@@ -37,167 +26,136 @@ log_info()    { echo -e "${BLUE}[setup]${NC} $1"; }
 log_success() { echo -e "${GREEN}[setup]${NC} $1"; }
 log_warn()    { echo -e "${YELLOW}[setup]${NC} $1"; }
 log_error()   { echo -e "${RED}[setup]${NC} $1" >&2; }
-log_header()  { echo -e "\n${BOLD}$1${NC}"; }
-
-# -----------------------------------------------------------------------------
-# Check prerequisites
-# -----------------------------------------------------------------------------
-check_prerequisites() {
-    log_header "Checking prerequisites..."
-    
-    # Check Docker
-    if ! command -v docker &>/dev/null; then
-        log_error "Docker not found!"
-        echo ""
-        echo "Please install Docker:"
-        echo "  macOS:   https://docs.docker.com/desktop/install/mac-install/"
-        echo "  Linux:   https://docs.docker.com/engine/install/"
-        echo "  Windows: https://docs.docker.com/desktop/install/windows-install/"
-        exit 1
-    fi
-    log_success "Docker found: $(docker --version)"
-    
-    # Check Docker daemon
-    if ! docker info &>/dev/null 2>&1; then
-        log_error "Docker daemon is not running!"
-        echo ""
-        echo "Please start Docker Desktop and try again."
-        exit 1
-    fi
-    log_success "Docker daemon is running"
-    
-    # Check Bash version
-    if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
-        log_warn "Bash version ${BASH_VERSION} detected. Version 4.0+ recommended."
-    else
-        log_success "Bash version: ${BASH_VERSION}"
-    fi
-}
 
 # -----------------------------------------------------------------------------
 # Install
 # -----------------------------------------------------------------------------
 install() {
-    log_header "Installing OpenCode Sandbox..."
-    
-    # Create directories
-    log_info "Creating directories..."
-    mkdir -p "$CONFIG_DIR"
-    mkdir -p "$BIN_DIR"
-    
-    # Copy Docker files to config directory
-    log_info "Copying Docker files..."
-    cp "$SCRIPT_DIR/Dockerfile" "$CONFIG_DIR/"
-    cp "$SCRIPT_DIR/entrypoint.sh" "$CONFIG_DIR/"
-    cp "$SCRIPT_DIR/opencode.json" "$CONFIG_DIR/"
-    
-    # Copy example config if no config exists
-    if [[ ! -f "$CONFIG_DIR/config" ]]; then
-        log_info "Creating default configuration..."
-        cp "$SCRIPT_DIR/config.example" "$CONFIG_DIR/config"
-    else
-        log_info "Keeping existing configuration"
+    echo -e "${BOLD}OpenCode Sandbox Setup${NC}"
+    echo ""
+
+    # Check Docker
+    if ! command -v docker &>/dev/null; then
+        log_error "Docker not found. Please install Docker Desktop first."
+        exit 1
     fi
-    
-    # Create symlink to launcher
-    log_info "Installing launcher script..."
-    cp "$SCRIPT_DIR/opencode-sandbox" "$BIN_DIR/opencode-sandbox"
-    chmod +x "$BIN_DIR/opencode-sandbox"
-    
-    # Check if BIN_DIR is in PATH
-    if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-        log_warn "$BIN_DIR is not in your PATH"
+
+    # Create install directory
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        log_info "Creating $INSTALL_DIR"
+        mkdir -p "$INSTALL_DIR"
+    fi
+
+    # Copy the script (preserving the source directory reference)
+    log_info "Installing $SCRIPT_NAME to $INSTALL_DIR"
+
+    # Create a wrapper script that calls the original
+    cat > "$INSTALL_DIR/$SCRIPT_NAME" << EOF
+#!/bin/bash
+# Wrapper script - calls the actual opencode-sandbox from the repo
+exec "$SCRIPT_DIR/$SCRIPT_NAME" "\$@"
+EOF
+    chmod +x "$INSTALL_DIR/$SCRIPT_NAME"
+
+    # Check if install dir is in PATH
+    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+        echo ""
+        log_warn "$INSTALL_DIR is not in your PATH"
         echo ""
         echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
         echo ""
-        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+        echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
         echo ""
     fi
-    
-    # Build Docker image
-    log_header "Building Docker image..."
-    log_info "This may take a minute on first run..."
-    docker build -t "$IMAGE_NAME" "$CONFIG_DIR"
-    
-    # Show installed version
-    local version=$(docker run --rm "$IMAGE_NAME" opencode --version 2>/dev/null || echo "unknown")
-    
-    log_header "Installation Complete!"
+
+    # Build Docker images
     echo ""
-    echo -e "  ${GREEN}✓${NC} OpenCode version: $version"
-    echo -e "  ${GREEN}✓${NC} Configuration: $CONFIG_DIR/config"
-    echo -e "  ${GREEN}✓${NC} Command: opencode-sandbox"
+    log_info "Building Docker images (this may take a minute)..."
+
+    # Create a temporary compose file just for building
+    local temp_compose
+    temp_compose=$(mktemp)
+    cat > "$temp_compose" << EOF
+services:
+  proxy:
+    build:
+      context: ${SCRIPT_DIR}/proxy
+    image: opencode-sandbox-proxy
+  agent:
+    build:
+      context: ${SCRIPT_DIR}/agent
+    image: opencode-sandbox-agent
+EOF
+
+    docker compose -f "$temp_compose" build --quiet
+    rm -f "$temp_compose"
+
+    log_success "Docker images built"
+
+    # Show success message
     echo ""
-    echo -e "${BOLD}Quick Start:${NC}"
-    echo "  cd /path/to/your/project"
-    echo "  opencode-sandbox"
+    echo "=============================================="
+    log_success "Installation complete!"
+    echo "=============================================="
     echo ""
-    echo -e "${BOLD}Edit Configuration:${NC}"
-    echo "  opencode-sandbox --config"
+    echo "Usage:"
+    echo "  opencode-sandbox                    # Run in current directory"
+    echo "  opencode-sandbox ~/Projects/myapp   # Run in specific directory"
+    echo "  opencode-sandbox --help             # Show all options"
     echo ""
-    echo -e "${BOLD}Update OpenCode:${NC}"
-    echo "  opencode-sandbox --update"
+    echo "Configuration:"
+    echo "  opencode-sandbox --config           # Edit network whitelist"
     echo ""
 }
 
 # -----------------------------------------------------------------------------
-# Uninstall
+# Remove
 # -----------------------------------------------------------------------------
-uninstall() {
-    log_header "Uninstalling OpenCode Sandbox..."
-    
-    # Remove launcher
-    if [[ -f "$BIN_DIR/opencode-sandbox" ]]; then
-        log_info "Removing launcher script..."
-        rm "$BIN_DIR/opencode-sandbox"
+remove() {
+    echo -e "${BOLD}OpenCode Sandbox Removal${NC}"
+    echo ""
+
+    # Remove installed script
+    if [[ -f "$INSTALL_DIR/$SCRIPT_NAME" ]]; then
+        log_info "Removing $INSTALL_DIR/$SCRIPT_NAME"
+        rm -f "$INSTALL_DIR/$SCRIPT_NAME"
     fi
-    
-    # Remove Docker image
-    if docker image inspect "$IMAGE_NAME" &>/dev/null; then
-        log_info "Removing Docker image..."
-        docker rmi "$IMAGE_NAME"
-    fi
-    
+
+    # Remove Docker images
+    log_info "Removing Docker images..."
+    docker rmi opencode-sandbox-proxy opencode-sandbox-agent 2>/dev/null || true
+
     # Ask about config
     if [[ -d "$CONFIG_DIR" ]]; then
         echo ""
         read -p "Remove configuration directory $CONFIG_DIR? [y/N] " -n 1 -r
-        echo ""
+        echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Removing configuration..."
+            log_info "Removing $CONFIG_DIR"
             rm -rf "$CONFIG_DIR"
-        else
-            log_info "Keeping configuration directory"
         fi
     fi
-    
-    log_success "Uninstallation complete!"
+
+    echo ""
+    log_success "Removal complete"
 }
 
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 main() {
-    echo -e "${BOLD}"
-    echo "╔═══════════════════════════════════════════╗"
-    echo "║       OpenCode Sandbox Setup              ║"
-    echo "╚═══════════════════════════════════════════╝"
-    echo -e "${NC}"
-    
     case "${1:-}" in
-        --remove|--uninstall|-r)
-            check_prerequisites
-            uninstall
+        --remove|-r)
+            remove
             ;;
         --help|-h)
-            echo "Usage: $0 [--remove]"
+            echo "Usage: ./setup.sh [--remove]"
             echo ""
             echo "Options:"
-            echo "  --remove    Uninstall opencode-sandbox"
-            echo "  --help      Show this help message"
+            echo "  --remove, -r    Remove opencode-sandbox"
+            echo "  --help, -h      Show this help"
             ;;
         *)
-            check_prerequisites
             install
             ;;
     esac

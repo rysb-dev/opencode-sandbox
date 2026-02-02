@@ -2,372 +2,348 @@
 # =============================================================================
 # OpenCode Sandbox Smoke Test
 # =============================================================================
-# This script verifies that the sandbox is working correctly by testing:
-#   1. Network isolation (blocked hosts are unreachable)
-#   2. Network whitelist (allowed hosts are reachable)
-#   3. Filesystem isolation (only mounted paths are accessible)
-#   4. OpenCode is installed and runnable
+# This script tests the sandbox environment to verify:
+# 1. Containers are running and healthy
+# 2. Proxy is blocking disallowed domains
+# 3. Proxy is allowing allowed domains
+# 4. Agent has correct environment configuration
+# 5. Network isolation is working (agent can't bypass proxy)
 #
-# Usage:
-#   ./smoke-test.sh
+# Usage: ./smoke-test.sh
 # =============================================================================
-
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE_NAME="opencode-sandbox"
-TEST_RESULTS=()
-PASSED=0
-FAILED=0
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-BOLD='\033[1m'
 NC='\033[0m'
 
-log_test()    { echo -e "${BLUE}[test]${NC} $1"; }
-log_pass()    { echo -e "${GREEN}[PASS]${NC} $1"; ((PASSED++)) || true; }
-log_fail()    { echo -e "${RED}[FAIL]${NC} $1"; ((FAILED++)) || true; }
-log_header()  { echo -e "\n${BOLD}$1${NC}\n"; }
+PASS="${GREEN}✓${NC}"
+FAIL="${RED}✗${NC}"
+WARN="${YELLOW}!${NC}"
+INFO="${BLUE}ℹ${NC}"
 
-# Helper: Run docker without entrypoint (for direct commands)
-docker_run_direct() {
-    docker run --rm --entrypoint="" "$@"
-}
+# Counters
+TESTS_PASSED=0
+TESTS_FAILED=0
+TESTS_SKIPPED=0
 
-# Helper: Run docker with entrypoint (for testing entrypoint behavior)
-docker_run_with_entrypoint() {
-    docker run --rm "$@"
-}
-
-# Helper: Extract just the last line (actual result) from output that may contain sandbox logs
-get_last_line() {
-    echo "$1" | tail -1
-}
-
-# Helper: Check if output contains a value (ignoring sandbox log lines)
-output_contains() {
-    local output="$1"
-    local pattern="$2"
-    echo "$output" | grep -v '^\[sandbox\]' | grep -v '^\[0;' | grep -q "$pattern"
-}
+# Container names
+PROXY_CONTAINER="opencode-sandbox-proxy"
+AGENT_CONTAINER="opencode-sandbox-agent"
 
 # -----------------------------------------------------------------------------
-# Check prerequisites
+# Helpers
 # -----------------------------------------------------------------------------
-check_prerequisites() {
-    log_header "Prerequisites"
-    
-    if ! command -v docker &>/dev/null; then
-        log_fail "Docker not installed"
-        exit 1
-    fi
-    log_pass "Docker is installed"
-    
-    if ! docker info >/dev/null 2>&1; then
-        log_fail "Docker daemon not running"
-        exit 1
-    fi
-    log_pass "Docker daemon is running"
-    
-    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-        log_test "Building Docker image (required for tests)..."
-        docker build -t "$IMAGE_NAME" "$SCRIPT_DIR" >/dev/null 2>&1
-    fi
-    log_pass "Docker image '$IMAGE_NAME' exists"
+
+log_test() {
+    echo -e "\n${BLUE}[TEST]${NC} $1"
 }
 
-# -----------------------------------------------------------------------------
-# Test: OpenCode installation
-# -----------------------------------------------------------------------------
-test_opencode_installed() {
-    log_header "Test: OpenCode Installation"
-    
-    log_test "Checking if opencode binary exists..."
-    if docker_run_direct "$IMAGE_NAME" which opencode >/dev/null 2>&1; then
-        log_pass "opencode binary found"
+log_pass() {
+    echo -e "  ${PASS} $1"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+}
+
+log_fail() {
+    echo -e "  ${FAIL} $1"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+}
+
+log_skip() {
+    echo -e "  ${WARN} SKIP: $1"
+    TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+}
+
+log_info() {
+    echo -e "  ${INFO} $1"
+}
+
+# Run command in agent container
+agent_exec() {
+    docker exec "$AGENT_CONTAINER" "$@" 2>/dev/null
+}
+
+# Check if containers are running
+check_containers_running() {
+    log_test "Checking containers are running..."
+
+    # Check proxy
+    if docker ps -q -f "name=${PROXY_CONTAINER}" -f "status=running" | grep -q .; then
+        log_pass "Proxy container is running"
     else
-        log_fail "opencode binary not found"
-        return
+        log_fail "Proxy container is not running"
+        return 1
     fi
-    
-    log_test "Checking opencode version..."
-    local version
-    version=$(docker_run_direct "$IMAGE_NAME" opencode --version 2>/dev/null || echo "")
-    if [[ -n "$version" ]]; then
-        log_pass "opencode version: $version"
+
+    # Check agent
+    if docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" | grep -q .; then
+        log_pass "Agent container is running"
     else
-        log_fail "Could not get opencode version"
+        log_fail "Agent container is not running"
+        return 1
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Test: Network isolation
-# -----------------------------------------------------------------------------
-test_network_isolation() {
-    log_header "Test: Network Isolation"
-    
-    # Test 1: Blocked host (google.com is not in whitelist)
-    log_test "Testing blocked host (google.com)..."
-    local blocked_result
-    blocked_result=$(docker_run_with_entrypoint \
-        --cap-add=NET_ADMIN \
-        -e "ALLOWED_HOSTS=api.anthropic.com" \
-        "$IMAGE_NAME" \
-        bash -c "curl -s --connect-timeout 5 https://www.google.com >/dev/null 2>&1 && echo 'REACHABLE' || echo 'BLOCKED'" 2>&1)
-    
-    if output_contains "$blocked_result" "BLOCKED"; then
-        log_pass "google.com is BLOCKED (as expected)"
+# Check proxy health
+check_proxy_health() {
+    log_test "Checking proxy health..."
+
+    if docker ps -f "name=${PROXY_CONTAINER}" | grep -q "healthy"; then
+        log_pass "Proxy is healthy"
     else
-        log_fail "google.com should be blocked but was reachable"
-    fi
-    
-    # Test 2: Allowed host (api.anthropic.com)
-    log_test "Testing whitelisted host (api.anthropic.com)..."
-    local allowed_result
-    allowed_result=$(docker_run_with_entrypoint \
-        --cap-add=NET_ADMIN \
-        -e "ALLOWED_HOSTS=api.anthropic.com" \
-        "$IMAGE_NAME" \
-        bash -c "curl -s --connect-timeout 10 -o /dev/null -w '%{http_code}' https://api.anthropic.com; echo ''" 2>&1)
-    
-    # Extract HTTP status code - look for 3-digit number that's not 000
-    local http_code
-    http_code=$(echo "$allowed_result" | grep -oE '[0-9]{3}' | tail -1 || echo "000")
-    
-    # We expect some HTTP response (even 401/403 is fine - it means we reached the server)
-    if [[ "$http_code" =~ ^[0-9]+$ ]] && [[ "$http_code" != "000" ]]; then
-        log_pass "api.anthropic.com is REACHABLE (HTTP $http_code)"
-    else
-        log_fail "api.anthropic.com should be reachable but connection failed"
-    fi
-    
-    # Test 3: Another blocked host (example.com)
-    log_test "Testing another blocked host (example.com)..."
-    local blocked2_result
-    blocked2_result=$(docker_run_with_entrypoint \
-        --cap-add=NET_ADMIN \
-        -e "ALLOWED_HOSTS=api.anthropic.com" \
-        "$IMAGE_NAME" \
-        bash -c "curl -s --connect-timeout 5 https://example.com >/dev/null 2>&1 && echo 'REACHABLE' || echo 'BLOCKED'" 2>&1)
-    
-    if output_contains "$blocked2_result" "BLOCKED"; then
-        log_pass "example.com is BLOCKED (as expected)"
-    else
-        log_fail "example.com should be blocked but was reachable"
-    fi
-    
-    # Test 4: No hosts allowed - with empty whitelist, firewall isn't set up
-    log_test "Testing with empty whitelist (all hosts allowed - no firewall)..."
-    local no_hosts_result
-    no_hosts_result=$(docker_run_with_entrypoint \
-        --cap-add=NET_ADMIN \
-        -e "ALLOWED_HOSTS=" \
-        "$IMAGE_NAME" \
-        bash -c 'http_code=$(curl -s --connect-timeout 10 -o /dev/null -w "%{http_code}" https://example.com 2>/dev/null); if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then echo "REACHABLE"; else echo "BLOCKED"; fi' 2>&1)
-    
-    # With empty whitelist, the firewall isn't set up, so connections should be allowed
-    if output_contains "$no_hosts_result" "REACHABLE"; then
-        log_pass "Empty whitelist = no firewall (all hosts reachable)"
-    else
-        log_fail "With empty whitelist, hosts should be reachable"
+        log_fail "Proxy is not healthy"
+        return 1
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Test: Filesystem isolation
-# -----------------------------------------------------------------------------
-test_filesystem_isolation() {
-    log_header "Test: Filesystem Isolation"
-    
-    # Create a test directory in HOME (not /tmp, which may not be shared with Docker on macOS)
-    local test_dir="$HOME/.opencode-sandbox-test-$$"
-    mkdir -p "$test_dir"
-    echo "test content" > "$test_dir/testfile.txt"
-    
-    # Test 1: Mounted directory is accessible (bypass entrypoint for clean output)
-    log_test "Testing mounted directory access..."
-    local mounted_result
-    mounted_result=$(docker_run_direct \
-        -v "$test_dir:/workspace:ro" \
-        "$IMAGE_NAME" \
-        cat /workspace/testfile.txt 2>/dev/null || echo "NOT_FOUND")
-    
-    if [[ "$mounted_result" == "test content" ]]; then
-        log_pass "Mounted directory is accessible"
-    else
-        log_fail "Could not read from mounted directory (got: '$mounted_result')"
-    fi
-    
-    # Test 2: Host filesystem outside mounts is not accessible
-    log_test "Testing host filesystem isolation..."
-    local isolated_result
-    isolated_result=$(docker_run_direct \
-        -v "$test_dir:/workspace:ro" \
-        "$IMAGE_NAME" \
-        bash -c "ls /Users 2>/dev/null && echo 'ACCESSIBLE' || echo 'ISOLATED'" 2>/dev/null)
-    
-    if [[ "$isolated_result" == *"ISOLATED"* ]]; then
-        log_pass "Host /Users directory is NOT accessible (isolated)"
-    else
-        log_fail "Host filesystem should not be accessible"
-    fi
-    
-    # Test 3: Cannot write to read-only mount
-    log_test "Testing read-only mount protection..."
-    local readonly_result
-    readonly_result=$(docker_run_direct \
-        -v "$test_dir:/workspace:ro" \
-        "$IMAGE_NAME" \
-        bash -c "touch /workspace/newfile.txt 2>&1 && echo 'WRITABLE' || echo 'READONLY'" 2>/dev/null)
-    
-    if [[ "$readonly_result" == *"READONLY"* ]]; then
-        log_pass "Read-only mount prevents writes"
-    else
-        log_fail "Read-only mount should prevent writes"
-    fi
-    
-    # Cleanup
-    rm -rf "$test_dir"
-}
+# Check environment variables in agent
+check_agent_environment() {
+    log_test "Checking agent environment configuration..."
 
-# -----------------------------------------------------------------------------
-# Test: User isolation
-# -----------------------------------------------------------------------------
-test_user_isolation() {
-    log_header "Test: User Isolation"
-    
-    log_test "Checking running user (via entrypoint)..."
-    local user_result
-    user_result=$(docker_run_with_entrypoint \
-        --cap-add=NET_ADMIN \
-        -e "ALLOWED_HOSTS=localhost" \
-        "$IMAGE_NAME" \
-        whoami 2>&1)
-    
-    # Extract just the username (last line, removing any color codes)
-    local username
-    username=$(echo "$user_result" | grep -v '^\[' | grep -v '^$' | tail -1 | tr -d '[:space:]')
-    
-    if [[ "$username" == "coder" ]]; then
-        log_pass "Running as non-root user 'coder'"
+    # Check HTTP_PROXY is set
+    if agent_exec printenv HTTP_PROXY | grep -q "proxy:3128"; then
+        log_pass "HTTP_PROXY is configured correctly"
     else
-        log_fail "Should run as 'coder' but got: '$username'"
+        log_fail "HTTP_PROXY is not configured"
     fi
-    
-    log_test "Checking user cannot become root..."
-    local sudo_result
-    sudo_result=$(docker_run_direct "$IMAGE_NAME" \
-        bash -c "sudo echo 'root' 2>&1 || echo 'NO_SUDO'" 2>/dev/null)
-    
-    if [[ "$sudo_result" == *"NO_SUDO"* ]] || [[ "$sudo_result" == *"not found"* ]] || [[ "$sudo_result" == *"command not found"* ]]; then
-        log_pass "sudo is not available"
+
+    # Check HTTPS_PROXY is set
+    if agent_exec printenv HTTPS_PROXY | grep -q "proxy:3128"; then
+        log_pass "HTTPS_PROXY is configured correctly"
     else
-        log_fail "sudo should not be available"
+        log_fail "HTTPS_PROXY is not configured"
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Test: OpenCode config (tool approval)
-# -----------------------------------------------------------------------------
-test_opencode_config() {
-    log_header "Test: OpenCode Configuration"
-    
-    log_test "Checking opencode config exists..."
-    local config_result
-    config_result=$(docker_run_direct "$IMAGE_NAME" \
-        cat /home/coder/.config/opencode/config.json 2>/dev/null || echo "NOT_FOUND")
-    
-    if [[ "$config_result" == *"autoApprove"* ]]; then
-        log_pass "OpenCode config file exists"
+# Check tools are installed
+check_agent_tools() {
+    log_test "Checking agent has required tools..."
+
+    # Check opencode
+    if agent_exec which opencode >/dev/null 2>&1; then
+        local version
+        version=$(agent_exec opencode --version 2>/dev/null || echo "unknown")
+        log_pass "opencode is installed (${version})"
     else
-        log_fail "OpenCode config file not found"
-        return
+        log_fail "opencode is not installed"
     fi
-    
-    log_test "Checking autoApprove is empty (requires permission for all tools)..."
-    if [[ "$config_result" == *'"autoApprove": []'* ]] || [[ "$config_result" == *'"autoApprove":[]'* ]]; then
-        log_pass "autoApprove is empty (all tools require permission)"
+
+    # Check Node.js
+    if agent_exec which node >/dev/null 2>&1; then
+        local version
+        version=$(agent_exec node --version 2>/dev/null)
+        log_pass "Node.js is installed (${version})"
     else
-        log_fail "autoApprove should be empty for maximum safety"
+        log_fail "Node.js is not installed"
+    fi
+
+    # Check Go
+    if agent_exec which go >/dev/null 2>&1; then
+        local version
+        version=$(agent_exec go version 2>/dev/null | awk '{print $3}')
+        log_pass "Go is installed (${version})"
+    else
+        log_fail "Go is not installed"
+    fi
+
+    # Check Python
+    if agent_exec which python >/dev/null 2>&1; then
+        local version
+        version=$(agent_exec python --version 2>/dev/null)
+        log_pass "Python is installed (${version})"
+    else
+        log_fail "Python is not installed"
+    fi
+
+    # Check git
+    if agent_exec which git >/dev/null 2>&1; then
+        log_pass "git is installed"
+    else
+        log_fail "git is not installed"
+    fi
+
+    # Check ripgrep
+    if agent_exec which rg >/dev/null 2>&1; then
+        log_pass "ripgrep is installed"
+    else
+        log_fail "ripgrep is not installed"
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Test: Entrypoint firewall setup
-# -----------------------------------------------------------------------------
-test_entrypoint_firewall() {
-    log_header "Test: Entrypoint Firewall Setup"
-    
-    log_test "Verifying iptables rules are created..."
-    # Set up firewall manually (same as entrypoint does) and verify rules
-    local iptables_result
-    iptables_result=$(docker run --rm \
-        --cap-add=NET_ADMIN \
-        --entrypoint="" \
-        "$IMAGE_NAME" \
-        bash -c '
-            iptables -F OUTPUT 2>/dev/null || true
-            iptables -P OUTPUT DROP
-            iptables -A OUTPUT -o lo -j ACCEPT
-            iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-            iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-            iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-            ip=$(dig +short api.anthropic.com | grep -E "^[0-9]" | head -1)
-            iptables -A OUTPUT -d "$ip" -p tcp --dport 443 -j ACCEPT
-            iptables -L OUTPUT -n
-        ' 2>&1)
-    
-    # Check that DROP policy is set and ACCEPT rules exist
-    if echo "$iptables_result" | grep -q "policy DROP" && echo "$iptables_result" | grep -q "ACCEPT"; then
-        log_pass "iptables firewall rules are configured"
+# Test allowed domain access through proxy
+check_allowed_domains() {
+    log_test "Checking access to allowed domains..."
+
+    # Test Anthropic API (should get through, even if we get an auth error)
+    log_info "Testing api.anthropic.com..."
+    local anthropic_response
+    anthropic_response=$(agent_exec curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 https://api.anthropic.com/v1/messages 2>/dev/null)
+
+    # Check if response is a valid HTTP code (3 digits, not 000)
+    if [ -n "$anthropic_response" ] && [ "$anthropic_response" != "000" ] && echo "$anthropic_response" | grep -qE '^[1-5][0-9]{2}$'; then
+        log_pass "api.anthropic.com is accessible (HTTP ${anthropic_response})"
     else
-        log_fail "iptables rules not properly configured"
+        log_fail "api.anthropic.com is not accessible (response: ${anthropic_response:-empty})"
+    fi
+
+    # Test GitHub API
+    log_info "Testing api.github.com..."
+    local github_response
+    github_response=$(agent_exec curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 https://api.github.com 2>/dev/null)
+
+    if [ -n "$github_response" ] && [ "$github_response" != "000" ] && echo "$github_response" | grep -qE '^[1-5][0-9]{2}$'; then
+        log_pass "api.github.com is accessible (HTTP ${github_response})"
+    else
+        log_fail "api.github.com is not accessible (response: ${github_response:-empty})"
     fi
 }
 
-# -----------------------------------------------------------------------------
-# Summary
-# -----------------------------------------------------------------------------
+# Test blocked domain access through proxy
+check_blocked_domains() {
+    log_test "Checking blocked domains are denied..."
+
+    # Test a domain that should NOT be in the allowlist
+    log_info "Testing example.com (should be blocked)..."
+    local example_response
+    example_response=$(agent_exec curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 https://example.com 2>/dev/null)
+
+    # Blocked domains should return 000 (connection failed) or be empty
+    if [ -z "$example_response" ] || [ "$example_response" = "000" ]; then
+        log_pass "example.com is blocked (connection failed as expected)"
+    else
+        log_fail "example.com is NOT blocked (HTTP ${example_response}) - check your allowlist!"
+    fi
+
+    # Test another blocked domain
+    log_info "Testing httpbin.org (should be blocked)..."
+    local httpbin_response
+    httpbin_response=$(agent_exec curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 https://httpbin.org/get 2>/dev/null)
+
+    if [ -z "$httpbin_response" ] || [ "$httpbin_response" = "000" ]; then
+        log_pass "httpbin.org is blocked (connection failed as expected)"
+    else
+        log_fail "httpbin.org is NOT blocked (HTTP ${httpbin_response}) - check your allowlist!"
+    fi
+}
+
+# Test that agent cannot bypass proxy
+check_network_isolation() {
+    log_test "Checking network isolation (agent cannot bypass proxy)..."
+
+    # Try to reach an allowed domain WITHOUT using the proxy
+    log_info "Attempting direct connection (bypassing proxy)..."
+    local direct_response
+    direct_response=$(agent_exec curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 --noproxy '*' https://api.github.com 2>/dev/null)
+
+    # Direct access should fail (000 or empty) because agent is on internal network
+    if [ -z "$direct_response" ] || [ "$direct_response" = "000" ]; then
+        log_pass "Direct internet access is blocked (agent isolated correctly)"
+    else
+        log_fail "Agent can bypass proxy! (HTTP ${direct_response}) - Network isolation is compromised!"
+    fi
+}
+
+# Test workspace mount
+check_workspace() {
+    log_test "Checking workspace mount..."
+
+    if agent_exec test -d /workspace; then
+        log_pass "/workspace directory exists"
+
+        # Check if it's writable
+        if agent_exec touch /workspace/.smoke-test-tmp 2>/dev/null && agent_exec rm /workspace/.smoke-test-tmp 2>/dev/null; then
+            log_pass "/workspace is writable"
+        else
+            log_fail "/workspace is not writable"
+        fi
+    else
+        log_fail "/workspace directory does not exist"
+    fi
+}
+
+# Check user is non-root
+check_non_root() {
+    log_test "Checking agent runs as non-root..."
+
+    local current_user
+    current_user=$(agent_exec whoami)
+
+    if [ "$current_user" = "coder" ]; then
+        log_pass "Agent runs as 'coder' user (non-root)"
+    elif [ "$current_user" = "root" ]; then
+        log_fail "Agent runs as root (security risk!)"
+    else
+        log_pass "Agent runs as '${current_user}' (non-root)"
+    fi
+}
+
+# Print summary
 print_summary() {
-    log_header "Test Summary"
-    
-    echo -e "  ${GREEN}Passed:${NC} $PASSED"
-    echo -e "  ${RED}Failed:${NC} $FAILED"
     echo ""
-    
-    if [[ $FAILED -eq 0 ]]; then
-        echo -e "${GREEN}${BOLD}All tests passed! ✓${NC}"
+    echo "============================================================================="
+    echo "                           SMOKE TEST SUMMARY"
+    echo "============================================================================="
+    echo ""
+    echo -e "  ${GREEN}Passed:${NC}  ${TESTS_PASSED}"
+    echo -e "  ${RED}Failed:${NC}  ${TESTS_FAILED}"
+    echo -e "  ${YELLOW}Skipped:${NC} ${TESTS_SKIPPED}"
+    echo ""
+
+    if [ "$TESTS_FAILED" -eq 0 ]; then
+        echo -e "  ${GREEN}All tests passed!${NC} ✨"
         echo ""
-        echo "Your OpenCode sandbox is properly configured and secure."
+        return 0
     else
-        echo -e "${RED}${BOLD}Some tests failed! ✗${NC}"
+        echo -e "  ${RED}Some tests failed.${NC} Review the output above for details."
         echo ""
-        echo "Please review the failures above and fix any issues."
-        exit 1
+        return 1
     fi
 }
 
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
+
 main() {
-    echo -e "${BOLD}"
-    echo "╔═══════════════════════════════════════════╗"
-    echo "║     OpenCode Sandbox Smoke Test           ║"
-    echo "╚═══════════════════════════════════════════╝"
-    echo -e "${NC}"
-    
-    check_prerequisites
-    test_opencode_installed
-    test_network_isolation
-    test_filesystem_isolation
-    test_user_isolation
-    test_opencode_config
-    test_entrypoint_firewall
+    echo "============================================================================="
+    echo "                    OpenCode Sandbox Smoke Test"
+    echo "============================================================================="
+    echo ""
+    echo "This script tests that the sandbox is configured correctly."
+    echo "Make sure the sandbox is running first: opencode-sandbox /path/to/project"
+    echo ""
+
+    # Check docker is available
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Error: docker is not installed${NC}"
+        exit 1
+    fi
+
+    # Check if containers are running
+    if ! docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" | grep -q .; then
+        echo -e "${RED}Error: Sandbox is not running.${NC}"
+        echo ""
+        echo "Start the sandbox first:"
+        echo "  opencode-sandbox /path/to/project"
+        echo ""
+        echo "Then run this smoke test from another terminal."
+        exit 1
+    fi
+
+    # Run tests
+    check_containers_running
+    check_proxy_health
+    check_agent_environment
+    check_agent_tools
+    check_non_root
+    check_workspace
+    check_allowed_domains
+    check_blocked_domains
+    check_network_isolation
+
+    # Print summary
     print_summary
 }
 

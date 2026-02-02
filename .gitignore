@@ -1,12 +1,19 @@
-# Ignore macOS system files
-.DS_Store
+# Environment files with secrets
+.env
 
-# Ignore editor files
+# Docker
+.docker/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
 *.swp
 *.swo
 *~
 .idea/
 .vscode/
 
-# Ignore build artifacts
+# Logs
 *.log
