@@ -19,6 +19,34 @@ log_success() { echo -e "${GREEN}[agent]${NC} $1"; }
 log_warn()    { echo -e "${YELLOW}[agent]${NC} $1"; }
 
 # -----------------------------------------------------------------------------
+# Import host opencode configuration if available
+# -----------------------------------------------------------------------------
+import_host_config() {
+    local host_config="/host-config/opencode"
+    local host_cache="/host-config/opencode-cache"
+    local config_dir="/home/coder/.config/opencode"
+    local cache_dir="/home/coder/.cache/opencode"
+
+    # Check if host config directory was mounted and has content
+    if [ -d "$host_config" ] && [ "$(ls -A $host_config 2>/dev/null)" ]; then
+        log_info "Found host opencode config, importing..."
+        mkdir -p "$config_dir"
+        # Copy host config files (but don't overwrite existing)
+        cp -rn "$host_config"/* "$config_dir"/ 2>/dev/null || true
+        log_success "Imported host opencode configuration"
+    fi
+
+    # Check if host cache directory was mounted and has content
+    if [ -d "$host_cache" ] && [ "$(ls -A $host_cache 2>/dev/null)" ]; then
+        log_info "Found host opencode cache, importing..."
+        mkdir -p "$cache_dir"
+        # Copy host cache files (but don't overwrite existing)
+        cp -rn "$host_cache"/* "$cache_dir"/ 2>/dev/null || true
+        log_success "Imported host opencode cache"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Configure Git for HTTPS authentication
 # -----------------------------------------------------------------------------
 setup_git() {
@@ -86,6 +114,7 @@ show_status() {
 # Main
 # -----------------------------------------------------------------------------
 main() {
+    import_host_config
     setup_git
     show_status
 

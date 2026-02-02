@@ -89,7 +89,17 @@ Or open a shell in the sandbox:
 docker compose exec agent bash
 ```
 
-### 4. Stop the Sandbox
+### 4. Run Smoke Tests (Optional)
+
+Verify everything is working correctly:
+
+```bash
+./smoke-test.sh
+```
+
+This tests network isolation, proxy filtering, tool installation, and more.
+
+### 5. Stop the Sandbox
 
 ```bash
 docker compose down
@@ -109,6 +119,9 @@ docker compose down
 | `GIT_HOST` | No | Git host (default: `github.com`) |
 
 *At least one API key is required.
+
+| `OPENCODE_HOST_CONFIG` | No | Path to host `~/.config/opencode` (to import existing config) |
+| `OPENCODE_HOST_CACHE` | No | Path to host `~/.cache/opencode` (to import existing cache) |
 
 ### Domain Allowlist
 
@@ -139,6 +152,23 @@ docker compose up -d
 **Domain format:**
 - `.example.com` - matches `example.com` and all subdomains (`api.example.com`, `www.example.com`, etc.)
 - `api.example.com` - matches only that exact domain
+
+### Using Existing OpenCode Configuration
+
+If you have opencode already configured on your host (with auth or other settings), you can mount that configuration into the container:
+
+```bash
+# In your .env file (macOS/Linux paths)
+OPENCODE_HOST_CONFIG=/Users/yourname/.config/opencode
+OPENCODE_HOST_CACHE=/Users/yourname/.cache/opencode
+```
+
+The container will import these files on startup (read-only). This is useful for:
+- Reusing existing authentication/API key configurations
+- Sharing opencode preferences between host and sandbox
+- Avoiding re-configuration when you already have opencode set up
+
+**Note:** The files are copied into the container, not bind-mounted directly, so changes made inside the container won't affect your host configuration.
 
 ### Adding Custom Tools
 
@@ -294,6 +324,26 @@ The workspace is mounted from your host. Ensure your user can read/write the pro
 3. **Review proxy logs** - Periodically check what domains are being accessed
 4. **Keep containers updated** - Rebuild periodically to get security patches
 
+## Smoke Tests
+
+The `smoke-test.sh` script validates your sandbox setup:
+
+```bash
+./smoke-test.sh
+```
+
+**What it tests:**
+- ✓ Containers are running and healthy
+- ✓ Proxy environment variables are configured
+- ✓ Required tools are installed (opencode, Node.js, Go, Python, git, ripgrep)
+- ✓ Agent runs as non-root user
+- ✓ Workspace is mounted and writable
+- ✓ Allowed domains are accessible (api.anthropic.com, api.github.com)
+- ✓ Blocked domains are denied (example.com, httpbin.org)
+- ✓ Network isolation works (agent cannot bypass proxy)
+
+Run this after initial setup or whenever you make configuration changes.
+
 ## Files
 
 | File | Description |
@@ -306,6 +356,7 @@ The workspace is mounted from your host. Ensure your user can read/write the pro
 | `agent/entrypoint.sh` | Agent startup script |
 | `agent/opencode.json` | OpenCode config (no auto-approve) |
 | `env.example` | Example environment file |
+| `smoke-test.sh` | Smoke test script to validate setup |
 
 ## License
 

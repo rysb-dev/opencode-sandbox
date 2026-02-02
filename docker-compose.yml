@@ -61,8 +61,13 @@ services:
     volumes:
       # Project directory - this is where your code lives
       - ${PROJECT_DIR:-.}:/workspace
-      # Persist opencode configuration
+      # Persist opencode configuration (named volume as fallback)
       - opencode-config:/home/coder/.config/opencode
+      # Mount host opencode auth/config if it exists (optional)
+      # These use bind mounts with the :ro flag for read-only access
+      # The container entrypoint will copy these to the right location if present
+      - ${OPENCODE_HOST_CONFIG:-/dev/null}:/host-config/opencode:ro
+      - ${OPENCODE_HOST_CACHE:-/dev/null}:/host-config/opencode-cache:ro
     working_dir: /workspace
 
 # ==========================================================================
