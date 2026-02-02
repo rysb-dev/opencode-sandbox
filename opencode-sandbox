@@ -49,10 +49,12 @@ show_help() {
     echo -e "${BOLD}COMMANDS:${NC}"
     echo "    shell          Open a bash shell in the running sandbox container"
     echo "    stop           Stop all sandbox containers"
+    echo "    update         Update opencode to the latest version (rebuilds image)"
     echo ""
     echo -e "${BOLD}OPTIONS:${NC}"
     echo "    -h, --help     Show this help message"
     echo "    -b, --build    Force rebuild of Docker images"
+    echo "    -u, --update   Update opencode to latest version (same as 'update')"
     echo "    -c, --config   Open configuration file in editor"
     echo "    --no-network   Disable all network access"
     echo ""
@@ -67,6 +69,7 @@ show_help() {
     echo "    opencode-sandbox ~/Projects/myapp   # Run in specific directory"
     echo "    opencode-sandbox shell              # Open shell in running sandbox"
     echo "    opencode-sandbox stop               # Stop all sandbox containers"
+    echo "    opencode-sandbox update             # Update opencode to latest"
     echo "    opencode-sandbox --build            # Rebuild images and run"
     echo ""
 }
@@ -283,6 +286,7 @@ EOF
 build_images() {
     local force="${1:-false}"
     local compose_file="$2"
+    local no_cache="${3:-false}"
 
     # Check if images exist
     local need_build=false
@@ -295,9 +299,45 @@ build_images() {
 
     if [[ "$need_build" == "true" ]]; then
         log_info "Building Docker images..."
-        docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --quiet
+        if [[ "$no_cache" == "true" ]]; then
+            docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --no-cache --quiet
+        else
+            docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --quiet
+        fi
         log_success "Images built successfully"
     fi
+}
+
+# -----------------------------------------------------------------------------
+# Update opencode (rebuild with no cache)
+# -----------------------------------------------------------------------------
+update_opencode() {
+    log_header "Updating OpenCode"
+    echo ""
+
+    # Ensure config exists
+    ensure_config
+
+    # Parse config
+    parse_config
+
+    # Generate config files
+    local domains_file
+    domains_file=$(generate_allowed_domains)
+
+    local compose_file
+    compose_file=$(generate_compose_file "$(pwd)" "$domains_file")
+
+    log_info "Rebuilding agent image with latest opencode..."
+    docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --no-cache agent
+
+    echo ""
+    log_success "Update complete!"
+
+    # Show new version
+    local version
+    version=$(docker run --rm "${COMPOSE_PROJECT}-agent" opencode --version 2>/dev/null || echo "unknown")
+    log_info "OpenCode version: $version"
 }
 
 # -----------------------------------------------------------------------------
@@ -465,6 +505,10 @@ main() {
             -b|--build)
                 export FORCE_BUILD=true
                 shift
+                ;;
+            -u|--update|update)
+                update_opencode
+                exit 0
                 ;;
             -c|--config)
                 ensure_config

@@ -119,10 +119,12 @@ opencode-sandbox [OPTIONS] [PROJECT_DIR]
 Commands:
   shell              Open bash shell in running sandbox
   stop               Stop all sandbox containers
+  update             Update opencode to latest version
 
 Options:
   -h, --help         Show help message
   -b, --build        Force rebuild Docker images
+  -u, --update       Update opencode to latest version
   -c, --config       Open configuration file in editor
   --no-network       Disable all network access
 ```
@@ -161,6 +163,16 @@ curl https://example.com
 # This should fail (bypassing proxy)
 curl --noproxy '*' https://api.github.com
 ```
+
+## Updating OpenCode
+
+To get the latest version of opencode:
+
+```bash
+opencode-sandbox update
+```
+
+This rebuilds the agent Docker image with the latest opencode release.
 
 ## Troubleshooting
 
