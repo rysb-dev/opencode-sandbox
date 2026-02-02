@@ -380,6 +380,12 @@ run_sandbox() {
         echo ""
     fi
 
+    # Clean up any existing container with the same name (may be stuck/hung)
+    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        log_info "Cleaning up existing container..."
+        docker rm -f "$CONTAINER_NAME" &>/dev/null || true
+    fi
+
     # Run container with a name so we can attach to it later
     docker run --rm -it \
         --name "$CONTAINER_NAME" \
