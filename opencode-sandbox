@@ -337,18 +337,22 @@ run_sandbox() {
     [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
 
     # SSH agent forwarding - allows git operations without exposing private keys
-    # Note: Agent forwarding only works reliably with Docker Desktop.
-    # For Colima/Lima, the mounted ~/.ssh keys are used directly instead.
     if [[ -n "$SSH_AUTH_SOCK" ]]; then
         # Check if Docker Desktop's magic socket exists (macOS/Windows Docker Desktop)
         if [[ -S "/run/host-services/ssh-auth.sock" ]]; then
             volume_args+=("-v" "/run/host-services/ssh-auth.sock:/ssh-agent")
             env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
             log_info "SSH agent: forwarded (Docker Desktop)"
+        elif [[ "$OSTYPE" == "linux-gnu"* ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
+            # On Linux, socket forwarding works natively (no VM in between)
+            volume_args+=("-v" "$SSH_AUTH_SOCK:/ssh-agent")
+            env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
+            log_info "SSH agent: forwarded (Linux)"
         else
-            # For Colima/Lima, Unix socket forwarding doesn't work from macOS to the Linux VM.
+            # For macOS with Colima/Lima, Unix socket forwarding doesn't work
+            # because sockets can't pass through the Linux VM.
             # The mounted ~/.ssh directory with keys will be used instead.
-            log_info "SSH agent: using mounted ~/.ssh keys (Colima/Lima)"
+            log_info "SSH agent: using mounted ~/.ssh keys (socket forwarding unavailable)"
         fi
     else
         log_info "SSH: using mounted ~/.ssh keys"

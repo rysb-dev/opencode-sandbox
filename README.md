@@ -104,7 +104,7 @@ By default, only your project directory is mounted (at `/workspace` inside the c
 Git operations via SSH (push, pull, clone) are automatically supported:
 
 1. **SSH directory mounted** - Your `~/.ssh/` is mounted read-only (provides config, known_hosts, keys)
-2. **SSH agent forwarding** - When `SSH_AUTH_SOCK` is available, the agent is forwarded into the container
+2. **SSH agent forwarding** - Works on Linux and Docker Desktop (macOS/Windows). For Colima/Lima on macOS, the mounted SSH keys are used directly instead.
 3. **Port 22 allowed** - SSH port is permitted for whitelisted hosts
 
 **To use git with SSH inside the sandbox:**
@@ -125,6 +125,7 @@ opencode-sandbox ~/Projects/my-repo
 
 - "Permission denied (publickey)" → Make sure your SSH agent is running: `ssh-add -l`
 - On macOS, add keys to keychain: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`
+- On macOS with Colima/Lima, SSH agent forwarding doesn't work (Unix sockets can't pass through the VM), but your mounted `~/.ssh` keys will be used directly
 - Verify your host is whitelisted in `~/.config/opencode-sandbox/config`
 
 ### Proxy Configuration
