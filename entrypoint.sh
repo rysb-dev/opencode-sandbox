@@ -85,8 +85,30 @@ if [ "$(id -u)" = "0" ]; then
     # Running as root - set up firewall, then drop to coder user
     setup_firewall
     
-    # Run the command as the coder user
-    exec su -s /bin/bash coder -c "cd /workspace && $*"
+    # Switch to coder user and run the command
+    if [ $# -eq 0 ]; then
+        exec su -s /bin/bash coder -c "cd /workspace && exec bash"
+    else
+        # For commands like "bash -c 'something'", we need to preserve quoting
+        # Write a script that will execute the command properly
+        tmpfile=$(mktemp /tmp/sandbox-cmd.XXXXXX)
+        
+        # Write the command with proper quoting
+        {
+            echo '#!/bin/bash'
+            echo 'cd /workspace'
+            # Use printf %q to properly quote each argument
+            printf 'exec'
+            for arg in "$@"; do
+                printf ' %q' "$arg"
+            done
+            printf '\n'
+        } > "$tmpfile"
+        
+        chmod 755 "$tmpfile"
+        chown coder:coder "$tmpfile"
+        exec su -s /bin/bash coder "$tmpfile"
+    fi
 else
     # Not running as root - just execute the command
     # (firewall won't be set up, but container isolation still applies)
