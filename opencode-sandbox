@@ -19,6 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode-sandbox"
 CONFIG_FILE="$CONFIG_DIR/config"
 IMAGE_NAME="opencode-sandbox"
+CONTAINER_NAME="opencode-sandbox-session"
 
 # Colors
 RED='\033[0;31m'
@@ -40,9 +41,13 @@ ${BOLD}OpenCode Sandbox${NC} - Run opencode in a secure, isolated environment
 
 ${BOLD}USAGE:${NC}
     opencode-sandbox [OPTIONS] [PROJECT_DIR]
+    opencode-sandbox shell    Open a bash shell in the running sandbox
 
 ${BOLD}ARGUMENTS:${NC}
     PROJECT_DIR    Directory to mount as workspace (default: current directory)
+
+${BOLD}COMMANDS:${NC}
+    shell          Open a bash shell in the running sandbox container
 
 ${BOLD}OPTIONS:${NC}
     -h, --help     Show this help message
@@ -57,6 +62,7 @@ ${BOLD}CONFIGURATION:${NC}
 ${BOLD}EXAMPLES:${NC}
     opencode-sandbox                    # Run in current directory
     opencode-sandbox ~/Projects/myapp   # Run in specific directory
+    opencode-sandbox shell              # Open shell in running sandbox
     opencode-sandbox --update           # Update opencode and rebuild image
 
 EOF
@@ -122,6 +128,33 @@ build_image() {
         docker build --no-cache -t "$IMAGE_NAME" "$dockerfile_dir"
         log_success "Image built successfully"
     fi
+}
+
+# -----------------------------------------------------------------------------
+# Open shell in running sandbox
+# -----------------------------------------------------------------------------
+open_shell() {
+    # Find running sandbox container
+    local container_id
+    container_id=$(docker ps -q -f "name=$CONTAINER_NAME" 2>/dev/null)
+    
+    if [[ -z "$container_id" ]]; then
+        log_error "No running sandbox found."
+        echo ""
+        echo "Start a sandbox first with:"
+        echo "  opencode-sandbox [project-directory]"
+        echo ""
+        echo "Then in another terminal, run:"
+        echo "  opencode-sandbox shell"
+        exit 1
+    fi
+    
+    log_info "Attaching shell to running sandbox..."
+    log_info "Type 'exit' to close this shell (sandbox will keep running)"
+    echo ""
+    
+    # Attach an interactive bash shell as the coder user
+    docker exec -it "$container_id" gosu coder bash
 }
 
 # -----------------------------------------------------------------------------
@@ -233,8 +266,9 @@ run_sandbox() {
     env_args+=("-e" "TERM=$TERM")
     [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
     
-    # Run container
+    # Run container with a name so we can attach to it later
     docker run --rm -it \
+        --name "$CONTAINER_NAME" \
         --cap-add=NET_ADMIN \
         "${env_args[@]}" \
         "${volume_args[@]}" \
@@ -272,6 +306,10 @@ main() {
                 ;;
             -c|--config)
                 ${EDITOR:-vim} "$CONFIG_FILE"
+                exit 0
+                ;;
+            shell)
+                open_shell
                 exit 0
                 ;;
             --no-network)
