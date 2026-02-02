@@ -170,33 +170,33 @@ This tests:
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Host Machine                             │
-│                                                             │
+┌────────────────────────────────────────────────────────────┐
+│                     Host Machine                           │
+│                                                            │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │              Docker Container                        │   │
-│  │                                                      │   │
-│  │  ┌────────────────┐     ┌──────────────────────┐   │   │
-│  │  │   iptables     │     │      OpenCode        │   │   │
-│  │  │   firewall     │────▶│  (runs as 'coder')   │   │   │
-│  │  │                │     │                      │   │   │
-│  │  │  ALLOW:        │     │  /workspace (rw)     │   │   │
-│  │  │  - DNS         │     │  ~/.config (rw)      │   │   │
-│  │  │  - whitelist   │     │                      │   │   │
-│  │  │                │     └──────────────────────┘   │   │
-│  │  │  DENY:         │                                │   │
-│  │  │  - everything  │                                │   │
-│  │  │    else        │                                │   │
-│  │  └────────────────┘                                │   │
-│  │                                                      │   │
+│  │              Docker Container                       │   │
+│  │                                                     │   │
+│  │  ┌────────────────┐     ┌──────────────────────┐    │   │
+│  │  │   iptables     │     │      OpenCode        │    │   │
+│  │  │   firewall     │────▶│  (runs as 'coder')   │    │   │
+│  │  │                │     │                      │    │   │
+│  │  │  ALLOW:        │     │  /workspace (rw)     │    │   │
+│  │  │  - DNS         │     │  ~/.config (rw)      │    │   │
+│  │  │  - whitelist   │     │                      │    │   │
+│  │  │                │     └──────────────────────┘    │   │
+│  │  │  DENY:         │                                 │   │
+│  │  │  - everything  │                                 │   │
+│  │  │    else        │                                 │   │
+│  │  └────────────────┘                                 │   │
+│  │                                                     │   │
 │  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  Mounted from host:                                         │
-│  - Project directory ──▶ /workspace                         │
+│                                                            │
+│  Mounted from host:                                        │
+│  - Project directory ──▶ /workspace                        │
 │  - ~/.config/opencode ──▶ /home/coder/.config/opencode     │
 │  - ~/.gitconfig ──▶ /home/coder/.gitconfig (read-only)     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+│                                                            │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ### Security Layers
