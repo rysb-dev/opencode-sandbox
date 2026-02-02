@@ -48,7 +48,6 @@ EOF
 
         # Create ACL for no_proxy domains
         echo "# Domains that bypass the upstream proxy (no_proxy)" >> "$UPSTREAM_CONFIG"
-        echo "acl no_proxy_domains dstdomain" >> "$UPSTREAM_CONFIG"
 
         # Parse comma-separated list
         IFS=',' read -ra DOMAINS <<< "$NO_PROXY_DOMAINS"
@@ -57,16 +56,8 @@ EOF
             domain=$(echo "$domain" | xargs)
             [ -z "$domain" ] && continue
 
-            # Handle .domain.com format (add both with and without dot)
-            if [[ "$domain" == .* ]]; then
-                echo "acl no_proxy_domains dstdomain ${domain}" >> "$UPSTREAM_CONFIG"
-                # Also add without leading dot
-                echo "acl no_proxy_domains dstdomain ${domain#.}" >> "$UPSTREAM_CONFIG"
-            else
-                echo "acl no_proxy_domains dstdomain ${domain}" >> "$UPSTREAM_CONFIG"
-                # Also add with leading dot for subdomains
-                echo "acl no_proxy_domains dstdomain .${domain}" >> "$UPSTREAM_CONFIG"
-            fi
+            # Add domain as-is (squid handles subdomain matching automatically)
+            echo "acl no_proxy_domains dstdomain ${domain}" >> "$UPSTREAM_CONFIG"
         done
 
         echo "" >> "$UPSTREAM_CONFIG"

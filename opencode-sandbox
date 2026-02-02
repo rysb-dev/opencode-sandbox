@@ -140,6 +140,14 @@ storage.googleapis.com
 #   /Users/yourname/shared-libs
 #   /Users/yourname/other-project:rw
 
+
+[environment]
+# Additional environment variables for the agent container
+# Format: KEY=value
+#
+# Example:
+#   NODE_EXTRA_CA_CERTS=/mnt/certs/mycerts.pem
+
 CONFIGEOF
     fi
 }
@@ -150,6 +158,7 @@ CONFIGEOF
 parse_config() {
     NETWORK_HOSTS=()
     FILESYSTEM_MOUNTS=()
+    AGENT_ENV_VARS=()
     UPSTREAM_PROXY_HOST=""
     UPSTREAM_PROXY_PORT=""
     NO_PROXY_DOMAINS=""
@@ -171,12 +180,19 @@ parse_config() {
             [[ "$line" == *"network"* || "$line" == *"NETWORK"* ]] && section="network"
             [[ "$line" == *"filesystem"* || "$line" == *"FILESYSTEM"* ]] && section="filesystem"
             [[ "$line" == *"proxy"* || "$line" == *"PROXY"* ]] && section="proxy"
+            [[ "$line" == *"environment"* || "$line" == *"ENVIRONMENT"* ]] && section="environment"
             continue
         fi
 
         case "$section" in
             network)    NETWORK_HOSTS+=("$line") ;;
             filesystem) FILESYSTEM_MOUNTS+=("$line") ;;
+            environment)
+                # Parse KEY=value pairs for environment variables
+                if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                    AGENT_ENV_VARS+=("$line")
+                fi
+                ;;
             proxy)
                 # Parse key=value pairs for proxy settings
                 if [[ "$line" =~ ^http_proxy[[:space:]]*= ]]; then
@@ -322,6 +338,7 @@ ${proxy_env}    healthcheck:
       - NO_PROXY=localhost,127.0.0.1
       - no_proxy=localhost,127.0.0.1
       - TERM=${TERM:-xterm-256color}
+$(for env_var in "${AGENT_ENV_VARS[@]}"; do echo "      - ${env_var}"; done)
     volumes:
 ${volume_mounts}    working_dir: /workspace
 
