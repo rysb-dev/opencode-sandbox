@@ -1,0 +1,50 @@
+# =============================================================================
+# Allowed Domains for OpenCode Sandbox
+# =============================================================================
+# Add one domain per line. Domains with a leading dot (.) will match
+# the domain and all subdomains.
+#
+# Example:
+#   .github.com      - matches github.com and *.github.com
+#   api.example.com  - matches only api.example.com
+#
+# To apply changes, rebuild the proxy container:
+#   docker compose build proxy && docker compose up -d
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# LLM API Providers
+# -----------------------------------------------------------------------------
+.anthropic.com
+.openai.com
+
+# -----------------------------------------------------------------------------
+# GitHub (for git operations and API access)
+# -----------------------------------------------------------------------------
+.github.com
+.githubusercontent.com
+
+# -----------------------------------------------------------------------------
+# Package Registries (uncomment as needed)
+# -----------------------------------------------------------------------------
+# npm / Node.js
+.npmjs.org
+.npmjs.com
+registry.yarnpkg.com
+
+# Go modules
+proxy.golang.org
+sum.golang.org
+storage.googleapis.com
+
+# Python / pip
+.pypi.org
+.pythonhosted.org
+
+# Rust / Cargo
+# .crates.io
+# static.crates.io
+
+# -----------------------------------------------------------------------------
+# Additional domains (add your own below)
+# -----------------------------------------------------------------------------

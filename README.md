@@ -1,346 +1,312 @@
 # OpenCode Sandbox
 
-Run [OpenCode](https://opencode.ai) in a secure, isolated Docker container with:
+Run [OpenCode](https://opencode.ai) in a secure, network-isolated Docker environment with domain whitelisting.
 
-- **Network whitelisting** - Only connect to approved domains (e.g., API endpoints)
-- **Filesystem isolation** - Only access your project directory and explicitly mounted paths
-- **Tool approval** - All tool calls require explicit permission (no auto-approve)
-- **Non-root execution** - OpenCode runs as an unprivileged user
+## Architecture
 
-## Why Use This?
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Host Machine                                   │
+│                                                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                        Docker Environment                           │   │
+│   │                                                                     │   │
+│   │   ┌─────────────────────┐         ┌─────────────────────┐           │   │
+│   │   │    Proxy Container  │         │   Agent Container   │           │   │
+│   │   │       (squid)       │         │     (opencode)      │           │   │
+│   │   │                     │         │                     │           │   │
+│   │   │  ┌───────────────┐  │         │  • Node.js          │           │   │
+│   │   │  │ allowed_      │  │         │  • Go               │           │   │
+│   │   │  │ domains.txt   │  │         │  • Python           │           │   │
+│   │   │  │               │  │         │  • ripgrep, git...  │           │   │
+│   │   │  │ .anthropic.com│  │◄────────│                     │           │   │
+│   │   │  │ .github.com   │  │  HTTP   │  HTTP_PROXY=proxy   │           │   │
+│   │   │  │ .npmjs.org    │  │  PROXY  │  HTTPS_PROXY=proxy  │           │   │
+│   │   │  │ ...           │  │         │                     │           │   │
+│   │   │  └───────────────┘  │         │  /workspace ◄───────┼───────────┼───┼── Project Dir
+│   │   │                     │         │                     │           │   │
+│   │   └──────────┬──────────┘         └─────────────────────┘           │   │
+│   │              │                              │                       │   │
+│   │   ═══════════╪══════════════════════════════╪═══════════════════    │   │
+│   │   external   │                    internal  │ (no internet)         │   │
+│   │   network    │                    network   │                       │   │
+│   │              │                                                      │   │
+│   └──────────────┼──────────────────────────────────────────────────────┘   │
+│                  │                                                          │
+│                  ▼                                                          │
+│              Internet (filtered: only allowed domains)                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-OpenCode is a powerful AI coding assistant that can read/write files and execute commands. While this is incredibly useful, you may want additional security controls:
+**Key Security Properties:**
 
-- **Prevent data exfiltration** - Block network access except to your LLM API provider
-- **Limit file access** - Restrict access to only your current project
-- **Audit trail** - See every action before it executes (no auto-approved tools)
-
-This sandbox provides defense-in-depth for running AI coding assistants safely.
+- **Agent container has zero direct internet access** - It's on an internal-only Docker network
+- **All outbound traffic goes through squid proxy** - Which only allows explicitly whitelisted domains
+- **No TLS interception** - HTTPS CONNECT method passes through without decryption
+- **Filesystem isolation** - Only your project directory is mounted (no access to home dir, SSH keys, etc.)
+- **No privileged capabilities** - Unlike iptables-based approaches, no `NET_ADMIN` required
 
 ## Quick Start
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macOS/Windows) or Docker Engine (Linux)
-- Bash 4.0+ (included on most systems)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) for macOS
+- An Anthropic API key (or OpenAI API key)
 
-### Installation
+### 1. Clone and Configure
 
 ```bash
-# Clone this repository
 git clone https://github.com/yourusername/opencode-sandbox.git
 cd opencode-sandbox
 
-# Run the setup script
-./setup.sh
+# Create your environment file
+cp env.example .env
 ```
 
-The setup script will:
-1. Copy configuration files to `~/.config/opencode-sandbox/`
-2. Install the `opencode-sandbox` command to `~/.local/bin/`
-3. Build the Docker image
-
-### Basic Usage
+Edit `.env` with your settings:
 
 ```bash
-# Run in current directory
-cd /path/to/your/project
-opencode-sandbox
+PROJECT_DIR=/path/to/your/project
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+```
 
-# Run in a specific directory
-opencode-sandbox ~/Projects/my-app
+### 2. Start the Sandbox
 
-# Show help
-opencode-sandbox --help
+```bash
+docker compose up -d
+```
+
+### 3. Run OpenCode
+
+```bash
+docker compose exec agent opencode
+```
+
+Or open a shell in the sandbox:
+
+```bash
+docker compose exec agent bash
+```
+
+### 4. Stop the Sandbox
+
+```bash
+docker compose down
 ```
 
 ## Configuration
 
-Edit your configuration file:
+### Environment Variables (`.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PROJECT_DIR` | Yes | Path to your project directory (mounted as `/workspace`) |
+| `ANTHROPIC_API_KEY` | Yes* | Anthropic API key for Claude |
+| `OPENAI_API_KEY` | No | OpenAI API key (if using OpenAI models) |
+| `GIT_TOKEN` | No | GitHub personal access token for push/pull |
+| `GIT_USER` | No | Git username (default: `git`) |
+| `GIT_HOST` | No | Git host (default: `github.com`) |
+
+*At least one API key is required.
+
+### Domain Allowlist
+
+Edit `proxy/allowed_domains.txt` to control which domains the agent can reach:
+
+```
+# LLM APIs
+.anthropic.com
+.openai.com
+
+# GitHub
+.github.com
+.githubusercontent.com
+
+# Package registries
+.npmjs.org
+proxy.golang.org
+.pypi.org
+```
+
+After editing, rebuild the proxy:
 
 ```bash
-opencode-sandbox --config
-# Or directly edit: ~/.config/opencode-sandbox/config
+docker compose build proxy
+docker compose up -d
 ```
 
-### Network Whitelist
+**Domain format:**
+- `.example.com` - matches `example.com` and all subdomains (`api.example.com`, `www.example.com`, etc.)
+- `api.example.com` - matches only that exact domain
 
-Specify which domains OpenCode can connect to:
+### Adding Custom Tools
 
-```ini
-[network]
-# LLM API endpoints
-api.anthropic.com
-api.openai.com
+The agent container includes common development tools:
+- Node.js (LTS)
+- Go 1.22
+- Python 3
+- ripgrep, git, jq, vim
 
-# GitHub (for Copilot, API access, etc.)
-api.githubcopilot.com
-copilot-proxy.githubusercontent.com
-github.com
-api.github.com
-
-# Documentation/research
-en.wikipedia.org
-docs.python.org
-```
-
-**How it works:** At container startup, each hostname is resolved to IP addresses. Iptables rules are created to allow HTTPS (port 443), HTTP (port 80), and SSH (port 22) connections only to those IPs. All other outbound traffic is blocked.
-
-### Filesystem Whitelist
-
-By default, only your project directory is mounted (at `/workspace` inside the container). Add additional directories:
-
-```ini
-[filesystem]
-# Read-only access (default)
-/Users/yourname/shared-libs
-
-# Read-write access
-/Users/yourname/another-project:rw
-```
-
-### SSH / Git Configuration
-
-Git operations via SSH (push, pull, clone) are automatically supported:
-
-1. **SSH directory mounted** - Your `~/.ssh/` is mounted read-only (provides config, known_hosts, keys)
-2. **SSH agent forwarding** - Works on Linux and Docker Desktop (macOS/Windows). For Colima/Lima on macOS, the mounted SSH keys are used directly instead.
-3. **Port 22 allowed** - SSH port is permitted for whitelisted hosts
-
-**To use git with SSH inside the sandbox:**
+To add more tools, edit `agent/Dockerfile` and rebuild:
 
 ```bash
-# 1. Ensure your git host is in the network whitelist
-#    (github.com is included by default)
-
-# 2. Start your SSH agent and add keys (if not already running)
-eval "$(ssh-agent -s)"
-ssh-add
-
-# 3. Run the sandbox - git push/pull will work!
-opencode-sandbox ~/Projects/my-repo
+docker compose build agent
+docker compose up -d
 ```
 
-**Troubleshooting SSH issues:**
+## Git Push/Pull
 
-- "Permission denied (publickey)" → Make sure your SSH agent is running: `ssh-add -l`
-- On macOS, add keys to keychain: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`
-- On macOS with Colima/Lima, SSH agent forwarding doesn't work (Unix sockets can't pass through the VM), but your mounted `~/.ssh` keys will be used directly
-- Verify your host is whitelisted in `~/.config/opencode-sandbox/config`
+Git operations use HTTPS with a Personal Access Token (no SSH needed).
 
-### Proxy Configuration
+### Setup
 
-If you're behind a corporate proxy, configure proxy settings:
+1. Generate a token at https://github.com/settings/tokens
+   - For private repos: select `repo` scope
+   - For public repos only: select `public_repo` scope
 
-```ini
-[proxy]
-http_proxy=http://proxy.company.com:8080
-https_proxy=http://proxy.company.com:8080
-no_proxy=localhost,127.0.0.1,.internal.company.com
-```
+2. Add to your `.env`:
+   ```
+   GIT_TOKEN=ghp_xxxxxxxxxxxx
+   ```
 
-**With authentication:**
+3. Ensure `github.com` is in the allowlist (it is by default)
 
-```ini
-[proxy]
-http_proxy=http://username:password@proxy.company.com:8080
-https_proxy=http://username:password@proxy.company.com:8080
-```
+### Usage
 
-These environment variables are passed to the container and used by OpenCode for API connections. Leave settings commented out (or remove the `[proxy]` section) to disable proxy support.
-
-## Updating OpenCode
-
-To get the latest version of OpenCode:
+Inside the sandbox, git push/pull will work automatically:
 
 ```bash
-opencode-sandbox --update
+cd /workspace
+git pull origin main
+# ... make changes ...
+git push origin main
 ```
 
-This rebuilds the Docker image with the latest OpenCode release.
+## Common Operations
 
-### Pinning a Specific Version
+### Interactive Shell
 
-To use a specific OpenCode version, edit the Dockerfile in `~/.config/opencode-sandbox/`:
+```bash
+docker compose exec agent bash
+```
+
+### View Proxy Logs
+
+```bash
+docker compose logs proxy -f
+```
+
+### Check What's Blocked
+
+Watch the proxy logs while running commands in the agent:
+
+```bash
+# Terminal 1: Watch proxy
+docker compose logs proxy -f
+
+# Terminal 2: Test in agent
+docker compose exec agent curl https://example.com
+# You'll see "TCP_DENIED" in the proxy logs
+```
+
+### Rebuild After Config Changes
+
+```bash
+# After editing allowed_domains.txt
+docker compose build proxy && docker compose up -d
+
+# After editing agent/Dockerfile
+docker compose build agent && docker compose up -d
+
+# Rebuild everything
+docker compose build && docker compose up -d
+```
+
+### Update OpenCode Version
+
+Edit `agent/Dockerfile` to pin a specific version:
 
 ```dockerfile
-# Change this line:
-ARG OPENCODE_VERSION=latest
-
-# To a specific version:
-ARG OPENCODE_VERSION=1.1.48
+ARG OPENCODE_VERSION=1.2.3
 ```
 
 Then rebuild:
 
 ```bash
-opencode-sandbox --update
+docker compose build agent && docker compose up -d
 ```
-
-## Verifying the Sandbox
-
-Run the smoke test to verify everything is working:
-
-```bash
-./smoke-test.sh
-```
-
-This tests:
-- ✅ OpenCode is installed correctly
-- ✅ Blocked hosts are unreachable (network isolation)
-- ✅ Whitelisted hosts are reachable
-- ✅ Host filesystem is isolated
-- ✅ Read-only mounts prevent writes
-- ✅ Running as non-root user
-- ✅ All tools require explicit permission
-
-## How It Works
-
-### Architecture
-
-```
-┌────────────────────────────────────────────────────────────┐
-│                     Host Machine                           │
-│                                                            │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Docker Container                       │   │
-│  │                                                     │   │
-│  │  ┌────────────────┐     ┌──────────────────────┐    │   │
-│  │  │   iptables     │     │      OpenCode        │    │   │
-│  │  │   firewall     │────▶│  (runs as 'coder')   │    │   │
-│  │  │                │     │                      │    │   │
-│  │  │  ALLOW:        │     │  /workspace (rw)     │    │   │
-│  │  │  - DNS         │     │  ~/.config (rw)      │    │   │
-│  │  │  - whitelist   │     │  ~/.ssh (ro)         │    │   │
-│  │  │    (80,443,22) │     │                      │    │   │
-│  │  │                │     └──────────────────────┘    │   │
-│  │  │  DENY:         │                                 │   │
-│  │  │  - everything  │                                 │   │
-│  │  │    else        │                                 │   │
-│  │  └────────────────┘                                 │   │
-│  │                                                     │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                            │
-│  Mounted from host:                                        │
-│  - Project directory ──▶ /workspace                        │
-│  - ~/.config/opencode ──▶ /home/coder/.config/opencode     │
-│  - ~/.gitconfig ──▶ /home/coder/.gitconfig (read-only)     │
-│  - ~/.ssh ──▶ /home/coder/.ssh (read-only)                 │
-│  - SSH_AUTH_SOCK ──▶ /ssh-agent (agent forwarding)         │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
-```
-
-### Security Layers
-
-1. **Docker isolation** - Container has its own filesystem, process space, and network stack
-2. **iptables firewall** - Blocks all outbound traffic except whitelisted hosts
-3. **Volume mounts** - Only explicitly mounted directories are accessible
-4. **Non-root user** - OpenCode runs as unprivileged user `coder`
-5. **Tool approval** - `autoApprove: []` config requires confirmation for every tool use
-
-### Network Filtering Details
-
-The entrypoint script:
-1. Sets iptables default OUTPUT policy to DROP
-2. Allows loopback (localhost) traffic
-3. Allows DNS queries (UDP/TCP port 53)
-4. Resolves each whitelisted hostname to IPs using `dig`
-5. Creates ACCEPT rules for each resolved IP on ports 80, 443, and 22 (SSH)
-
-**Note:** DNS resolution happens at container startup. If an API's IP addresses change while the container is running, connections may fail. Restart the container to re-resolve.
-
-## Command Reference
-
-```bash
-# Basic usage
-opencode-sandbox [PROJECT_DIR]
-
-# Options
-opencode-sandbox --help          # Show help
-opencode-sandbox --update        # Update to latest OpenCode
-opencode-sandbox --config        # Edit configuration file
-opencode-sandbox --no-network    # Disable ALL network access
-opencode-sandbox --skip-firewall # Skip firewall (debug only)
-
-# Shell access (while sandbox is running)
-opencode-sandbox shell           # Open bash in running container
-```
-
-### Shell Access
-
-While the sandbox is running, you can open a bash shell in the container from another terminal:
-
-```bash
-opencode-sandbox shell
-```
-
-This is useful for:
-- Inspecting the container environment
-- Running commands alongside OpenCode
-- Debugging issues
 
 ## Troubleshooting
 
-### "Docker daemon not running"
+### "Connection refused" or network errors
 
-Start Docker Desktop and try again.
+1. Check the proxy is healthy:
+   ```bash
+   docker compose ps
+   ```
 
-### Network connections failing
+2. Verify the domain is in the allowlist:
+   ```bash
+   cat proxy/allowed_domains.txt | grep yourdomain
+   ```
 
-1. Check your whitelist includes the necessary hosts
-2. Run with `--skip-firewall` to test if it's a firewall issue
-3. Check Docker's network settings
+3. Check proxy logs for denied requests:
+   ```bash
+   docker compose logs proxy
+   ```
 
-### "Permission denied" errors
+### API calls failing
 
-Ensure your project directory is accessible:
-```bash
-ls -la /path/to/project
-```
+Ensure your API provider's domain is in the allowlist:
+- Anthropic: `.anthropic.com`
+- OpenAI: `.openai.com`
 
-### View container logs
+### Git push/pull not working
 
-```bash
-# Run with debug output
-docker run --rm -it \
-    --cap-add=NET_ADMIN \
-    -e "ALLOWED_HOSTS=api.anthropic.com" \
-    -v $(pwd):/workspace \
-    opencode-sandbox bash
-```
+1. Verify `GIT_TOKEN` is set in `.env`
+2. Ensure `.github.com` is in the allowlist
+3. Check the token has correct permissions
 
-## Uninstallation
+### "Permission denied" on /workspace
 
-```bash
-./setup.sh --remove
-```
+The workspace is mounted from your host. Ensure your user can read/write the project directory.
 
-This removes:
-- The `opencode-sandbox` command
-- The Docker image
-- Optionally, the configuration directory
+## Security Notes
+
+### What's Protected
+
+- **Network**: Agent can only reach explicitly allowed domains
+- **Filesystem**: Only the mounted project directory is accessible
+- **Credentials**: API keys and tokens are passed via environment variables (not files)
+- **No SSH keys**: Unlike other approaches, your `~/.ssh` is not mounted
+
+### What's Not Protected
+
+- **Build-time network**: The Dockerfile has full network during `docker build`
+- **Proxy container**: Has full internet access (but only serves the agent)
+- **Docker daemon**: If compromised, isolation could be bypassed
+
+### Best Practices
+
+1. **Minimize the allowlist** - Only add domains you actually need
+2. **Use short-lived tokens** - Rotate your `GIT_TOKEN` regularly
+3. **Review proxy logs** - Periodically check what domains are being accessed
+4. **Keep containers updated** - Rebuild periodically to get security patches
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `setup.sh` | Installation script |
-| `opencode-sandbox` | Main launcher script |
-| `Dockerfile` | Container definition |
-| `entrypoint.sh` | Container startup (firewall setup) |
-| `opencode.json` | Default OpenCode config (no auto-approve) |
-| `config.example` | Example configuration file |
-| `smoke-test.sh` | Verification test suite |
-
-## Contributing
-
-Contributions welcome! Please open an issue or PR.
+| `docker-compose.yml` | Orchestrates proxy and agent containers |
+| `proxy/Dockerfile` | Squid proxy container |
+| `proxy/squid.conf` | Squid configuration |
+| `proxy/allowed_domains.txt` | **Edit this** - domain allowlist |
+| `agent/Dockerfile` | OpenCode agent with dev tools |
+| `agent/entrypoint.sh` | Agent startup script |
+| `agent/opencode.json` | OpenCode config (no auto-approve) |
+| `env.example` | Example environment file |
 
 ## License
 
 MIT License - See [LICENSE](LICENSE) file.
-
-## Acknowledgments
-
-Inspired by [this gist](https://gist.github.com/robbash/84aaa7c4133535b59cbaf0c1761031a4) using macOS sandbox-exec for OpenCode isolation.

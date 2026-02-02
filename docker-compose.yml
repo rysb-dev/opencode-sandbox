@@ -1,0 +1,87 @@
+# OpenCode Sandbox - Docker Compose Configuration
+#
+# Architecture:
+#   - proxy: Squid proxy with domain allowlist (only container with internet access)
+#   - agent: OpenCode container (can only reach internet through proxy)
+#
+# Usage:
+#   docker compose up -d        # Start the sandbox
+#   docker compose exec agent bash  # Shell into agent
+#   docker compose down         # Stop the sandbox
+
+services:
+  # ==========================================================================
+  # Squid Proxy - Network gatekeeper with domain allowlist
+  # ==========================================================================
+  proxy:
+    build: ./proxy
+    container_name: opencode-proxy
+    networks:
+      # External network for internet access
+      - external
+      # Internal network to communicate with agent
+      - internal
+    restart: unless-stopped
+    # Healthcheck to ensure squid is accepting connections
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3128 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ==========================================================================
+  # Agent - OpenCode container with development tools
+  # ==========================================================================
+  agent:
+    build: ./agent
+    container_name: opencode-agent
+    stdin_open: true
+    tty: true
+    networks:
+      # Internal network only - NO direct internet access
+      - internal
+    depends_on:
+      proxy:
+        condition: service_healthy
+    environment:
+      # Route all traffic through the proxy
+      - HTTP_PROXY=http://proxy:3128
+      - HTTPS_PROXY=http://proxy:3128
+      - http_proxy=http://proxy:3128
+      - https_proxy=http://proxy:3128
+      - NO_PROXY=localhost,127.0.0.1
+      - no_proxy=localhost,127.0.0.1
+      # Git configuration for HTTPS auth (user provides GIT_TOKEN)
+      - GIT_TOKEN=${GIT_TOKEN:-}
+      - GIT_USER=${GIT_USER:-git}
+      # API keys passed from host
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      # Project directory - this is where your code lives
+      - ${PROJECT_DIR:-.}:/workspace
+      # Persist opencode configuration
+      - opencode-config:/home/coder/.config/opencode
+    working_dir: /workspace
+
+# ==========================================================================
+# Networks
+# ==========================================================================
+networks:
+  # External network - has internet access (proxy only)
+  external:
+    driver: bridge
+
+  # Internal network - isolated, no internet access
+  # The 'internal: true' flag prevents containers on this network from
+  # reaching the internet directly - they MUST go through the proxy
+  internal:
+    driver: bridge
+    internal: true
+
+# ==========================================================================
+# Volumes
+# ==========================================================================
+volumes:
+  opencode-config:
