@@ -1,0 +1,48 @@
+# =============================================================================
+# OpenCode Sandbox Configuration
+# =============================================================================
+# Edit this file to configure your network and filesystem whitelist.
+# After editing, run: opencode-sandbox [project-directory]
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# NETWORK WHITELIST
+# -----------------------------------------------------------------------------
+# List of domains that opencode can connect to (one per line).
+# Lines starting with # are comments.
+# 
+# Common API endpoints:
+#   api.anthropic.com         - Claude API
+#   api.openai.com            - OpenAI API  
+#   api.githubcopilot.com     - GitHub Copilot
+#   copilot-proxy.githubusercontent.com - GitHub Copilot proxy
+#   github.com                - GitHub
+#   api.github.com            - GitHub API
+
+[network]
+api.anthropic.com
+api.openai.com
+api.githubcopilot.com
+copilot-proxy.githubusercontent.com
+github.com
+api.github.com
+raw.githubusercontent.com
+
+# -----------------------------------------------------------------------------
+# FILESYSTEM WHITELIST  
+# -----------------------------------------------------------------------------
+# Additional directories to mount into the sandbox (one per line).
+# 
+# The project directory you pass to opencode-sandbox is ALWAYS mounted 
+# read-write at /workspace inside the container.
+#
+# Format:
+#   /path/to/directory        - mounted read-only (default)
+#   /path/to/directory:rw     - mounted read-write
+#
+# Example:
+#   /Users/yourname/shared-libs
+#   /Users/yourname/other-project:rw
+
+[filesystem]
+# Add additional directories here

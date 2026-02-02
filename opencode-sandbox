@@ -1,0 +1,300 @@
+#!/bin/bash
+# =============================================================================
+# OpenCode Sandbox Launcher
+# =============================================================================
+# Usage: opencode-sandbox [project-directory]
+# 
+# Runs opencode in a Docker container with:
+#   - Network restricted to whitelisted hosts only
+#   - Filesystem restricted to specified directories only
+#   - Tool calls require explicit permission
+#
+# Configuration: ~/.config/opencode-sandbox/config
+# =============================================================================
+
+set -e
+
+# Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode-sandbox"
+CONFIG_FILE="$CONFIG_DIR/config"
+IMAGE_NAME="opencode-sandbox"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+log_info()    { echo -e "${BLUE}[sandbox]${NC} $1"; }
+log_success() { echo -e "${GREEN}[sandbox]${NC} $1"; }
+log_warn()    { echo -e "${YELLOW}[sandbox]${NC} $1"; }
+log_error()   { echo -e "${RED}[sandbox]${NC} $1" >&2; }
+log_header()  { echo -e "${BOLD}$1${NC}"; }
+
+show_help() {
+    cat << EOF
+${BOLD}OpenCode Sandbox${NC} - Run opencode in a secure, isolated environment
+
+${BOLD}USAGE:${NC}
+    opencode-sandbox [OPTIONS] [PROJECT_DIR]
+
+${BOLD}ARGUMENTS:${NC}
+    PROJECT_DIR    Directory to mount as workspace (default: current directory)
+
+${BOLD}OPTIONS:${NC}
+    -h, --help     Show this help message
+    -u, --update   Update opencode to the latest version (rebuilds image)
+    -c, --config   Open configuration file in editor
+    --no-network   Disable all network access
+    --skip-firewall Skip firewall setup (allows all network, for debugging)
+
+${BOLD}CONFIGURATION:${NC}
+    Edit: $CONFIG_FILE
+
+${BOLD}EXAMPLES:${NC}
+    opencode-sandbox                    # Run in current directory
+    opencode-sandbox ~/Projects/myapp   # Run in specific directory
+    opencode-sandbox --update           # Update opencode and rebuild image
+
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Parse configuration file
+# -----------------------------------------------------------------------------
+parse_config() {
+    NETWORK_HOSTS=()
+    FILESYSTEM_MOUNTS=()
+    
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        log_warn "Config file not found: $CONFIG_FILE"
+        log_info "Using default configuration"
+        # Default hosts if no config
+        NETWORK_HOSTS=("api.anthropic.com" "api.openai.com" "github.com")
+        return
+    fi
+    
+    local section=""
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        line=$(echo "$line" | xargs)  # trim whitespace
+        
+        # Check for section headers
+        if [[ "$line" =~ ^\[.*\]$ ]]; then
+            section=""
+            [[ "$line" == *"network"* || "$line" == *"NETWORK"* ]] && section="network"
+            [[ "$line" == *"filesystem"* || "$line" == *"FILESYSTEM"* ]] && section="filesystem"
+            continue
+        fi
+        
+        case "$section" in
+            network)    NETWORK_HOSTS+=("$line") ;;
+            filesystem) FILESYSTEM_MOUNTS+=("$line") ;;
+        esac
+    done < "$CONFIG_FILE"
+}
+
+# -----------------------------------------------------------------------------
+# Build or update Docker image
+# -----------------------------------------------------------------------------
+build_image() {
+    local force_rebuild="${1:-false}"
+    
+    if [[ "$force_rebuild" == "true" ]] || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+        log_info "Building sandbox Docker image..."
+        
+        # Find the Dockerfile location
+        local dockerfile_dir="$SCRIPT_DIR"
+        if [[ ! -f "$dockerfile_dir/Dockerfile" ]]; then
+            # Try config directory
+            dockerfile_dir="$CONFIG_DIR"
+        fi
+        
+        if [[ ! -f "$dockerfile_dir/Dockerfile" ]]; then
+            log_error "Dockerfile not found in $SCRIPT_DIR or $CONFIG_DIR"
+            exit 1
+        fi
+        
+        docker build --no-cache -t "$IMAGE_NAME" "$dockerfile_dir"
+        log_success "Image built successfully"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Update opencode
+# -----------------------------------------------------------------------------
+update_opencode() {
+    log_header "Updating OpenCode Sandbox"
+    echo ""
+    log_info "Rebuilding Docker image with latest opencode..."
+    build_image true
+    echo ""
+    log_success "Update complete!"
+    
+    # Show new version
+    local version=$(docker run --rm "$IMAGE_NAME" opencode --version 2>/dev/null || echo "unknown")
+    log_info "OpenCode version: $version"
+}
+
+# -----------------------------------------------------------------------------
+# Main run function
+# -----------------------------------------------------------------------------
+run_sandbox() {
+    local project_dir="${1:-$(pwd)}"
+    local skip_firewall="${SKIP_FIREWALL:-false}"
+    local no_network="${NO_NETWORK:-false}"
+    
+    # Resolve to absolute path
+    project_dir=$(cd "$project_dir" 2>/dev/null && pwd) || {
+        log_error "Directory not found: $project_dir"
+        exit 1
+    }
+    
+    log_header "OpenCode Sandbox"
+    echo ""
+    log_info "Project: $project_dir"
+    
+    # Parse config
+    parse_config
+    
+    # Build hosts list
+    local hosts_csv=""
+    if [[ "$no_network" == "true" ]]; then
+        log_warn "Network access: DISABLED"
+        hosts_csv=""
+    elif [[ ${#NETWORK_HOSTS[@]} -gt 0 ]]; then
+        echo ""
+        log_info "Network whitelist:"
+        for host in "${NETWORK_HOSTS[@]}"; do
+            log_info "  ✓ $host"
+            [[ -n "$hosts_csv" ]] && hosts_csv+=","
+            hosts_csv+="$host"
+        done
+    fi
+    
+    # Build volume mounts
+    local -a volume_args=()
+    
+    # Project directory (always read-write)
+    volume_args+=("-v" "$project_dir:/workspace:rw")
+    
+    # OpenCode config/cache directories (persistent across runs)
+    local opencode_config="$HOME/.config/opencode"
+    local opencode_cache="$HOME/.cache/opencode"
+    local opencode_data="$HOME/.local/share/opencode"
+    local opencode_state="$HOME/.local/state/opencode"
+    
+    mkdir -p "$opencode_config" "$opencode_cache" "$opencode_data" "$opencode_state"
+    
+    volume_args+=("-v" "$opencode_config:/home/coder/.config/opencode:rw")
+    volume_args+=("-v" "$opencode_cache:/home/coder/.cache/opencode:rw")
+    volume_args+=("-v" "$opencode_data:/home/coder/.local/share/opencode:rw")
+    volume_args+=("-v" "$opencode_state:/home/coder/.local/state/opencode:rw")
+    
+    # Git config (read-only)
+    [[ -f "$HOME/.gitconfig" ]] && volume_args+=("-v" "$HOME/.gitconfig:/home/coder/.gitconfig:ro")
+    [[ -d "$HOME/.config/git" ]] && volume_args+=("-v" "$HOME/.config/git:/home/coder/.config/git:ro")
+    
+    echo ""
+    log_info "Filesystem access:"
+    log_info "  ✓ $project_dir (read-write)"
+    
+    # Additional filesystem mounts from config
+    for mount in "${FILESYSTEM_MOUNTS[@]}"; do
+        local host_path="${mount%%:*}"
+        local mode="ro"
+        [[ "$mount" == *":rw" ]] && mode="rw"
+        host_path="${host_path%:rw}"
+        
+        if [[ -d "$host_path" ]]; then
+            local container_path="/mnt$(echo "$host_path" | tr ' ' '_')"
+            volume_args+=("-v" "$host_path:$container_path:$mode")
+            log_info "  ✓ $host_path ($mode)"
+        else
+            log_warn "  ✗ $host_path (not found, skipping)"
+        fi
+    done
+    
+    # Ensure image exists
+    build_image
+    
+    echo ""
+    log_success "Starting sandboxed opencode..."
+    log_info "Press Ctrl+C to exit"
+    echo ""
+    
+    # Environment variables
+    local -a env_args=()
+    env_args+=("-e" "ALLOWED_HOSTS=$hosts_csv")
+    env_args+=("-e" "TERM=$TERM")
+    [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
+    
+    # Run container
+    docker run --rm -it \
+        --cap-add=NET_ADMIN \
+        "${env_args[@]}" \
+        "${volume_args[@]}" \
+        "$IMAGE_NAME" \
+        opencode
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+    # Check Docker
+    if ! command -v docker &>/dev/null; then
+        log_error "Docker not found. Please install Docker Desktop."
+        exit 1
+    fi
+    
+    if ! docker info &>/dev/null 2>&1; then
+        log_error "Docker daemon not running. Please start Docker Desktop."
+        exit 1
+    fi
+    
+    # Parse arguments
+    local project_dir=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -u|--update)
+                update_opencode
+                exit 0
+                ;;
+            -c|--config)
+                ${EDITOR:-vim} "$CONFIG_FILE"
+                exit 0
+                ;;
+            --no-network)
+                export NO_NETWORK=true
+                shift
+                ;;
+            --skip-firewall)
+                export SKIP_FIREWALL=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+            *)
+                project_dir="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    run_sandbox "$project_dir"
+}
+
+main "$@"

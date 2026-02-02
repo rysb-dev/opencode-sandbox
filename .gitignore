@@ -1,0 +1,12 @@
+# Ignore macOS system files
+.DS_Store
+
+# Ignore editor files
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Ignore build artifacts
+*.log
