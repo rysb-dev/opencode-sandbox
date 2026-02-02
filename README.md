@@ -99,6 +99,27 @@ By default, only your project directory is mounted (at `/workspace` inside the c
 /Users/yourname/another-project:rw
 ```
 
+### Proxy Configuration
+
+If you're behind a corporate proxy, configure proxy settings:
+
+```ini
+[proxy]
+http_proxy=http://proxy.company.com:8080
+https_proxy=http://proxy.company.com:8080
+no_proxy=localhost,127.0.0.1,.internal.company.com
+```
+
+**With authentication:**
+
+```ini
+[proxy]
+http_proxy=http://username:password@proxy.company.com:8080
+https_proxy=http://username:password@proxy.company.com:8080
+```
+
+These environment variables are passed to the container and used by OpenCode for API connections. Leave settings commented out (or remove the `[proxy]` section) to disable proxy support.
+
 ## Updating OpenCode
 
 To get the latest version of OpenCode:
@@ -204,12 +225,28 @@ The entrypoint script:
 opencode-sandbox [PROJECT_DIR]
 
 # Options
-opencode-sandbox --help        # Show help
-opencode-sandbox --update      # Update to latest OpenCode
-opencode-sandbox --config      # Edit configuration file
-opencode-sandbox --no-network  # Disable ALL network access
-opencode-sandbox --skip-firewall  # Skip firewall (debug only)
+opencode-sandbox --help          # Show help
+opencode-sandbox --update        # Update to latest OpenCode
+opencode-sandbox --config        # Edit configuration file
+opencode-sandbox --no-network    # Disable ALL network access
+opencode-sandbox --skip-firewall # Skip firewall (debug only)
+
+# Shell access (while sandbox is running)
+opencode-sandbox shell           # Open bash in running container
 ```
+
+### Shell Access
+
+While the sandbox is running, you can open a bash shell in the container from another terminal:
+
+```bash
+opencode-sandbox shell
+```
+
+This is useful for:
+- Inspecting the container environment
+- Running commands alongside OpenCode
+- Debugging issues
 
 ## Troubleshooting
 
