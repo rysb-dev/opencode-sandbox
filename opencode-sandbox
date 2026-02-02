@@ -180,6 +180,45 @@ open_shell() {
 update_opencode() {
     log_header "Updating OpenCode Sandbox"
     echo ""
+
+    # Check if we're in a git repo with the source files
+    local repo_dir=""
+    if [[ -f "$SCRIPT_DIR/Dockerfile" && -f "$SCRIPT_DIR/entrypoint.sh" ]]; then
+        repo_dir="$SCRIPT_DIR"
+    fi
+
+    # Try to update from git repo if available
+    if [[ -n "$repo_dir" && -d "$repo_dir/.git" ]]; then
+        log_info "Found git repository at $repo_dir"
+        log_info "Pulling latest changes..."
+        if (cd "$repo_dir" && git pull --ff-only 2>/dev/null); then
+            log_success "Repository updated"
+        else
+            log_warn "Could not pull updates (you may have local changes)"
+        fi
+
+        # Update installed files from repo
+        log_info "Updating installed files..."
+        cp "$repo_dir/opencode-sandbox" "$CONFIG_DIR/../../../.local/bin/opencode-sandbox" 2>/dev/null || \
+            cp "$repo_dir/opencode-sandbox" "$HOME/.local/bin/opencode-sandbox" 2>/dev/null || true
+        cp "$repo_dir/Dockerfile" "$CONFIG_DIR/" 2>/dev/null || true
+        cp "$repo_dir/entrypoint.sh" "$CONFIG_DIR/" 2>/dev/null || true
+        cp "$repo_dir/opencode.json" "$CONFIG_DIR/" 2>/dev/null || true
+        log_success "Installed files updated"
+    elif [[ -n "$repo_dir" ]]; then
+        # Source files exist but not a git repo - just copy them
+        log_info "Updating installed files from $repo_dir..."
+        cp "$repo_dir/opencode-sandbox" "$HOME/.local/bin/opencode-sandbox" 2>/dev/null || true
+        cp "$repo_dir/Dockerfile" "$CONFIG_DIR/" 2>/dev/null || true
+        cp "$repo_dir/entrypoint.sh" "$CONFIG_DIR/" 2>/dev/null || true
+        cp "$repo_dir/opencode.json" "$CONFIG_DIR/" 2>/dev/null || true
+        log_success "Installed files updated"
+    else
+        log_info "No source repository found - only rebuilding Docker image"
+        log_info "To update scripts, run: cd /path/to/opencode-sandbox && git pull && ./setup.sh"
+    fi
+
+    echo ""
     log_info "Rebuilding Docker image with latest opencode..."
     build_image true
     echo ""
@@ -298,20 +337,21 @@ run_sandbox() {
     [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
 
     # SSH agent forwarding - allows git operations without exposing private keys
+    # Note: Agent forwarding only works reliably with Docker Desktop.
+    # For Colima/Lima, the mounted ~/.ssh keys are used directly instead.
     if [[ -n "$SSH_AUTH_SOCK" ]]; then
-        # On macOS, use the special Docker socket path
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            volume_args+=("-v" "/run/host-services/ssh-auth.sock:/ssh-agent:ro")
+        # Check if Docker Desktop's magic socket exists (macOS/Windows Docker Desktop)
+        if [[ -S "/run/host-services/ssh-auth.sock" ]]; then
+            volume_args+=("-v" "/run/host-services/ssh-auth.sock:/ssh-agent")
             env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
-            log_info "SSH agent: forwarded (macOS)"
+            log_info "SSH agent: forwarded (Docker Desktop)"
         else
-            # On Linux, mount the actual socket
-            volume_args+=("-v" "$SSH_AUTH_SOCK:/ssh-agent:ro")
-            env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
-            log_info "SSH agent: forwarded"
+            # For Colima/Lima, Unix socket forwarding doesn't work from macOS to the Linux VM.
+            # The mounted ~/.ssh directory with keys will be used instead.
+            log_info "SSH agent: using mounted ~/.ssh keys (Colima/Lima)"
         fi
     else
-        log_warn "SSH agent not running - git SSH operations may require password"
+        log_info "SSH: using mounted ~/.ssh keys"
     fi
 
     # Proxy configuration (if set)
