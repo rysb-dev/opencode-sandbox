@@ -84,7 +84,7 @@ en.wikipedia.org
 docs.python.org
 ```
 
-**How it works:** At container startup, each hostname is resolved to IP addresses. Iptables rules are created to allow HTTPS (port 443) and HTTP (port 80) connections only to those IPs. All other outbound traffic is blocked.
+**How it works:** At container startup, each hostname is resolved to IP addresses. Iptables rules are created to allow HTTPS (port 443), HTTP (port 80), and SSH (port 22) connections only to those IPs. All other outbound traffic is blocked.
 
 ### Filesystem Whitelist
 
@@ -98,6 +98,34 @@ By default, only your project directory is mounted (at `/workspace` inside the c
 # Read-write access
 /Users/yourname/another-project:rw
 ```
+
+### SSH / Git Configuration
+
+Git operations via SSH (push, pull, clone) are automatically supported:
+
+1. **SSH directory mounted** - Your `~/.ssh/` is mounted read-only (provides config, known_hosts, keys)
+2. **SSH agent forwarding** - When `SSH_AUTH_SOCK` is available, the agent is forwarded into the container
+3. **Port 22 allowed** - SSH port is permitted for whitelisted hosts
+
+**To use git with SSH inside the sandbox:**
+
+```bash
+# 1. Ensure your git host is in the network whitelist
+#    (github.com is included by default)
+
+# 2. Start your SSH agent and add keys (if not already running)
+eval "$(ssh-agent -s)"
+ssh-add
+
+# 3. Run the sandbox - git push/pull will work!
+opencode-sandbox ~/Projects/my-repo
+```
+
+**Troubleshooting SSH issues:**
+
+- "Permission denied (publickey)" → Make sure your SSH agent is running: `ssh-add -l`
+- On macOS, add keys to keychain: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`
+- Verify your host is whitelisted in `~/.config/opencode-sandbox/config`
 
 ### Proxy Configuration
 
@@ -182,7 +210,8 @@ This tests:
 │  │  │                │     │                      │    │   │
 │  │  │  ALLOW:        │     │  /workspace (rw)     │    │   │
 │  │  │  - DNS         │     │  ~/.config (rw)      │    │   │
-│  │  │  - whitelist   │     │                      │    │   │
+│  │  │  - whitelist   │     │  ~/.ssh (ro)         │    │   │
+│  │  │    (80,443,22) │     │                      │    │   │
 │  │  │                │     └──────────────────────┘    │   │
 │  │  │  DENY:         │                                 │   │
 │  │  │  - everything  │                                 │   │
@@ -195,6 +224,8 @@ This tests:
 │  - Project directory ──▶ /workspace                        │
 │  - ~/.config/opencode ──▶ /home/coder/.config/opencode     │
 │  - ~/.gitconfig ──▶ /home/coder/.gitconfig (read-only)     │
+│  - ~/.ssh ──▶ /home/coder/.ssh (read-only)                 │
+│  - SSH_AUTH_SOCK ──▶ /ssh-agent (agent forwarding)         │
 │                                                            │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -214,7 +245,7 @@ The entrypoint script:
 2. Allows loopback (localhost) traffic
 3. Allows DNS queries (UDP/TCP port 53)
 4. Resolves each whitelisted hostname to IPs using `dig`
-5. Creates ACCEPT rules for each resolved IP on ports 80/443
+5. Creates ACCEPT rules for each resolved IP on ports 80, 443, and 22 (SSH)
 
 **Note:** DNS resolution happens at container startup. If an API's IP addresses change while the container is running, connections may fail. Restart the container to re-resolve.
 

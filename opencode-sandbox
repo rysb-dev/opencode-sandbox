@@ -257,6 +257,12 @@ run_sandbox() {
     [[ -f "$HOME/.gitconfig" ]] && volume_args+=("-v" "$HOME/.gitconfig:/home/coder/.gitconfig:ro")
     [[ -d "$HOME/.config/git" ]] && volume_args+=("-v" "$HOME/.config/git:/home/coder/.config/git:ro")
 
+    # SSH config and keys (read-only) - enables git push/pull via SSH
+    if [[ -d "$HOME/.ssh" ]]; then
+        volume_args+=("-v" "$HOME/.ssh:/home/coder/.ssh:ro")
+        log_info "  ✓ ~/.ssh (read-only, for git SSH access)"
+    fi
+
     echo ""
     log_info "Filesystem access:"
     log_info "  ✓ $project_dir (read-write)"
@@ -290,6 +296,23 @@ run_sandbox() {
     env_args+=("-e" "ALLOWED_HOSTS=$hosts_csv")
     env_args+=("-e" "TERM=$TERM")
     [[ "$skip_firewall" == "true" ]] && env_args+=("-e" "SKIP_FIREWALL=true")
+
+    # SSH agent forwarding - allows git operations without exposing private keys
+    if [[ -n "$SSH_AUTH_SOCK" ]]; then
+        # On macOS, use the special Docker socket path
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            volume_args+=("-v" "/run/host-services/ssh-auth.sock:/ssh-agent:ro")
+            env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
+            log_info "SSH agent: forwarded (macOS)"
+        else
+            # On Linux, mount the actual socket
+            volume_args+=("-v" "$SSH_AUTH_SOCK:/ssh-agent:ro")
+            env_args+=("-e" "SSH_AUTH_SOCK=/ssh-agent")
+            log_info "SSH agent: forwarded"
+        fi
+    else
+        log_warn "SSH agent not running - git SSH operations may require password"
+    fi
 
     # Proxy configuration (if set)
     if [[ -n "$PROXY_HTTP" || -n "$PROXY_HTTPS" ]]; then

@@ -10,10 +10,10 @@
 # -----------------------------------------------------------------------------
 # List of domains that opencode can connect to (one per line).
 # Lines starting with # are comments.
-# 
+#
 # Common API endpoints:
 #   api.anthropic.com         - Claude API
-#   api.openai.com            - OpenAI API  
+#   api.openai.com            - OpenAI API
 #   api.githubcopilot.com     - GitHub Copilot
 #   copilot-proxy.githubusercontent.com - GitHub Copilot proxy
 #   github.com                - GitHub
@@ -35,7 +35,7 @@ raw.githubusercontent.com
 # Leave commented out to disable proxy support.
 #
 # http_proxy   - Proxy URL for HTTP connections
-# https_proxy  - Proxy URL for HTTPS connections  
+# https_proxy  - Proxy URL for HTTPS connections
 # no_proxy     - Comma-separated list of hosts to bypass proxy
 #
 # Examples:
@@ -52,11 +52,11 @@ raw.githubusercontent.com
 # no_proxy=localhost,127.0.0.1,.internal.company.com
 
 # -----------------------------------------------------------------------------
-# FILESYSTEM WHITELIST  
+# FILESYSTEM WHITELIST
 # -----------------------------------------------------------------------------
 # Additional directories to mount into the sandbox (one per line).
-# 
-# The project directory you pass to opencode-sandbox is ALWAYS mounted 
+#
+# The project directory you pass to opencode-sandbox is ALWAYS mounted
 # read-write at /workspace inside the container.
 #
 # Format:
@@ -69,3 +69,25 @@ raw.githubusercontent.com
 
 [filesystem]
 # Add additional directories here
+
+# -----------------------------------------------------------------------------
+# SSH / GIT CONFIGURATION (Automatic)
+# -----------------------------------------------------------------------------
+# SSH support for git operations is automatically enabled:
+#
+# 1. Your ~/.ssh/ directory is mounted read-only into the container
+#    (provides access to config, known_hosts, and keys)
+#
+# 2. SSH agent forwarding is enabled when SSH_AUTH_SOCK is available
+#    (allows git push/pull without exposing private keys directly)
+#
+# 3. Port 22 (SSH) is allowed for whitelisted hosts
+#
+# To use git with SSH:
+#   - Ensure github.com (or your git host) is in the [network] whitelist
+#   - Start your SSH agent on the host: eval "$(ssh-agent -s)" && ssh-add
+#   - Git operations like push/pull/clone will work inside the sandbox
+#
+# Note: If you see "Permission denied (publickey)" errors:
+#   - Make sure your SSH agent is running: ssh-add -l
+#   - On macOS, you may need to add keys to keychain: ssh-add --apple-use-keychain
