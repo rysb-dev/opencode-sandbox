@@ -272,9 +272,12 @@ generate_compose_file() {
     volume_mounts+="      - ${opencode_data}:/home/coder/.local/share/opencode:rw"$'\n'
     volume_mounts+="      - ${opencode_state}:/home/coder/.local/state/opencode:rw"$'\n'
 
-    # Git config (read-only)
-    [[ -f "$HOME/.gitconfig" ]] && volume_mounts+="      - ${HOME}/.gitconfig:/home/coder/.gitconfig:ro"$'\n'
+    # Git config (read-write so git can add safe.directory)
+    [[ -f "$HOME/.gitconfig" ]] && volume_mounts+="      - ${HOME}/.gitconfig:/home/coder/.gitconfig:rw"$'\n'
     [[ -d "$HOME/.config/git" ]] && volume_mounts+="      - ${HOME}/.config/git:/home/coder/.config/git:ro"$'\n'
+
+    # SSH keys (mounted read-only, entrypoint copies with correct permissions)
+    [[ -d "$HOME/.ssh" ]] && volume_mounts+="      - ${HOME}/.ssh:/mnt/ssh:ro"$'\n'
 
     # Additional filesystem mounts from config
     for mount in "${FILESYSTEM_MOUNTS[@]}"; do

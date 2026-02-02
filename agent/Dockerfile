@@ -23,7 +23,13 @@ RUN apt-get update && apt-get install -y \
     vim \
     # Build essentials
     build-essential \
+    # For SSH proxy tunneling (git over SSH)
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Install Node.js (LTS)
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
@@ -64,8 +70,17 @@ RUN mkdir -p /workspace \
     && mkdir -p /home/coder/.cache/opencode \
     && mkdir -p /home/coder/.local/share/opencode \
     && mkdir -p /home/coder/.local/state/opencode \
+    && mkdir -p /home/coder/.ssh \
     && mkdir -p /home/coder/go \
     && chown -R coder:coder /workspace /home/coder
+
+# Configure SSH to use proxy for git hosts
+RUN printf '%s\n' \
+    'Host github.com gitlab.com bitbucket.org' \
+    '    ProxyCommand nc -X connect -x proxy:3128 %h %p' \
+    > /home/coder/.ssh/config \
+    && chown coder:coder /home/coder/.ssh/config \
+    && chmod 600 /home/coder/.ssh/config
 
 # Set working directory
 WORKDIR /workspace
@@ -73,5 +88,6 @@ WORKDIR /workspace
 # Switch to non-root user
 USER coder
 
-# Default command
+# Entrypoint copies SSH keys with correct permissions
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["opencode"]

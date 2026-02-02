@@ -115,6 +115,23 @@ no_proxy=localhost,127.0.0.1,.internal.company.com,intranet.local
 - `no_proxy` domains are accessed directly (useful for intranet hosts)
 - Both the domain whitelist AND corporate proxy rules are enforced
 
+### Custom Environment Variables
+
+Pass custom environment variables to the agent container using the `[environment]` section:
+
+```ini
+[environment]
+NODE_EXTRA_CA_CERTS=/mnt/Users/yourname/certs/corporate-ca.pem
+MY_CUSTOM_VAR=some_value
+```
+
+This is useful for:
+- Custom CA certificates (corporate environments)
+- API keys or tokens
+- Any environment configuration the agent needs
+
+**Note:** If referencing mounted files, use the container path (e.g., `/mnt/...`). See the `[filesystem]` section for mounting additional directories.
+
 ### Default Allowed Domains
 
 The default configuration allows:
@@ -161,9 +178,28 @@ The sandbox automatically mounts your existing opencode configuration:
 - `~/.cache/opencode` - Cached data
 - `~/.local/share/opencode` - Application data
 - `~/.local/state/opencode` - State data
-- `~/.gitconfig` - Git configuration (read-only)
+- `~/.gitconfig` - Git configuration
+- `~/.ssh` - SSH keys (copied with correct permissions)
 
 This means your API keys, model preferences, and other settings work automatically.
+
+### Git over SSH
+
+Git SSH operations (clone, fetch, pull, push) work automatically for:
+- `github.com`
+- `gitlab.com`
+- `bitbucket.org`
+
+Your SSH keys from `~/.ssh` are automatically copied into the container with correct permissions. The SSH traffic is tunneled through the squid proxy.
+
+**Requirements:**
+- Your SSH keys must be in `~/.ssh/` (e.g., `~/.ssh/id_ed25519`)
+- The git host must be in your `[network]` whitelist
+
+**First-time setup:** You may need to add `/workspace` as a safe directory for git:
+```bash
+git config --global --add safe.directory /workspace
+```
 
 ## Verifying Network Isolation
 
@@ -235,7 +271,7 @@ docker logs opencode-sandbox-agent
 - Cannot bypass proxy - there's no route to the internet
 - No `NET_ADMIN` or other privileged capabilities required
 - Only your project directory is mounted read-write
-- Host SSH keys and other sensitive files are NOT mounted
+- SSH keys are copied (not mounted) with restricted permissions
 
 ## License
 
