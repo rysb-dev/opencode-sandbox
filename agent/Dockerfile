@@ -47,31 +47,25 @@ RUN apt-get update && apt-get install -y \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
 # Install opencode
-# Note: This requires network access during build, so we build before
-# the container is placed on the internal network
 RUN if [ "$OPENCODE_VERSION" = "latest" ]; then \
     curl -fsSL https://opencode.ai/install | bash; \
     else \
     curl -fsSL https://opencode.ai/install | VERSION="$OPENCODE_VERSION" bash; \
     fi \
-    && find /root -name "opencode" -type f -executable 2>/dev/null | head -1 | xargs -I{} mv {} /usr/local/bin/opencode
+    && mv /root/.local/bin/opencode /usr/local/bin/opencode 2>/dev/null \
+    || find /root -name "opencode" -type f -executable 2>/dev/null | head -1 | xargs -I{} mv {} /usr/local/bin/opencode
 
 # Create non-root user
 RUN useradd -m -s /bin/bash coder
 
-# Create workspace and config directories
+# Create necessary directories
 RUN mkdir -p /workspace \
     && mkdir -p /home/coder/.config/opencode \
+    && mkdir -p /home/coder/.cache/opencode \
+    && mkdir -p /home/coder/.local/share/opencode \
+    && mkdir -p /home/coder/.local/state/opencode \
     && mkdir -p /home/coder/go \
     && chown -R coder:coder /workspace /home/coder
-
-# Copy entrypoint script
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Copy default opencode config
-COPY opencode.json /home/coder/.config/opencode/config.json
-RUN chown coder:coder /home/coder/.config/opencode/config.json
 
 # Set working directory
 WORKDIR /workspace
@@ -79,5 +73,5 @@ WORKDIR /workspace
 # Switch to non-root user
 USER coder
 
-ENTRYPOINT ["/entrypoint.sh"]
+# Default command
 CMD ["opencode"]

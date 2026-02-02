@@ -12,9 +12,6 @@
 # Usage: ./smoke-test.sh
 # =============================================================================
 
-# Don't use set -e because we want to continue on test failures
-# set -e
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,6 +28,10 @@ INFO="${BLUE}ℹ${NC}"
 TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
+
+# Container names
+PROXY_CONTAINER="opencode-sandbox-proxy"
+AGENT_CONTAINER="opencode-sandbox-agent"
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -61,23 +62,15 @@ log_info() {
 
 # Run command in agent container
 agent_exec() {
-    docker compose exec -T agent "$@" 2>/dev/null
-}
-
-# Run command in agent container (no external timeout - use curl's --max-time instead)
-# Note: macOS doesn't have 'timeout' command by default
-agent_exec_timeout() {
-    local timeout=$1
-    shift
-    docker compose exec -T agent "$@" 2>/dev/null
+    docker exec "$AGENT_CONTAINER" "$@" 2>/dev/null
 }
 
 # Check if containers are running
 check_containers_running() {
     log_test "Checking containers are running..."
 
-    # Check proxy (status shows "Up" not "running")
-    if docker compose ps proxy 2>/dev/null | grep -qE "(running|Up)"; then
+    # Check proxy
+    if docker ps -q -f "name=${PROXY_CONTAINER}" -f "status=running" | grep -q .; then
         log_pass "Proxy container is running"
     else
         log_fail "Proxy container is not running"
@@ -85,7 +78,7 @@ check_containers_running() {
     fi
 
     # Check agent
-    if docker compose ps agent 2>/dev/null | grep -qE "(running|Up)"; then
+    if docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" | grep -q .; then
         log_pass "Agent container is running"
     else
         log_fail "Agent container is not running"
@@ -97,7 +90,7 @@ check_containers_running() {
 check_proxy_health() {
     log_test "Checking proxy health..."
 
-    if docker compose ps proxy 2>/dev/null | grep -q "healthy"; then
+    if docker ps -f "name=${PROXY_CONTAINER}" | grep -q "healthy"; then
         log_pass "Proxy is healthy"
     else
         log_fail "Proxy is not healthy"
@@ -121,13 +114,6 @@ check_agent_environment() {
         log_pass "HTTPS_PROXY is configured correctly"
     else
         log_fail "HTTPS_PROXY is not configured"
-    fi
-
-    # Check API keys (just that they exist, don't reveal values)
-    if agent_exec printenv ANTHROPIC_API_KEY | grep -q "."; then
-        log_pass "ANTHROPIC_API_KEY is set"
-    else
-        log_skip "ANTHROPIC_API_KEY is not set (may be intentional)"
     fi
 }
 
@@ -277,26 +263,6 @@ check_workspace() {
     fi
 }
 
-# Test opencode config
-check_opencode_config() {
-    log_test "Checking opencode configuration..."
-
-    local config_path="/home/coder/.config/opencode/config.json"
-
-    if agent_exec test -f "$config_path"; then
-        log_pass "OpenCode config file exists"
-
-        # Check permission setting
-        if agent_exec cat "$config_path" | grep -q '"permission"'; then
-            log_pass "OpenCode permission setting is configured"
-        else
-            log_skip "OpenCode permission setting not found in config"
-        fi
-    else
-        log_fail "OpenCode config file not found at ${config_path}"
-    fi
-}
-
 # Check user is non-root
 check_non_root() {
     log_test "Checking agent runs as non-root..."
@@ -346,36 +312,24 @@ main() {
     echo "============================================================================="
     echo ""
     echo "This script tests that the sandbox is configured correctly."
+    echo "Make sure the sandbox is running first: opencode-sandbox /path/to/project"
     echo ""
 
-    # Check docker compose is available
+    # Check docker is available
     if ! command -v docker &> /dev/null; then
         echo -e "${RED}Error: docker is not installed${NC}"
         exit 1
     fi
 
-    # Check if we're in the right directory
-    if [ ! -f "docker-compose.yml" ]; then
-        echo -e "${RED}Error: docker-compose.yml not found${NC}"
-        echo "Run this script from the opencode-sandbox directory."
+    # Check if containers are running
+    if ! docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" | grep -q .; then
+        echo -e "${RED}Error: Sandbox is not running.${NC}"
+        echo ""
+        echo "Start the sandbox first:"
+        echo "  opencode-sandbox /path/to/project"
+        echo ""
+        echo "Then run this smoke test from another terminal."
         exit 1
-    fi
-
-    # Check if containers are running (status shows "Up" not "running")
-    if ! docker compose ps 2>/dev/null | grep -qE "(running|Up)"; then
-        echo -e "${YELLOW}Warning: Containers don't appear to be running.${NC}"
-        echo "Starting containers with: docker compose up -d"
-        echo ""
-
-        if ! docker compose up -d; then
-            echo -e "${RED}Failed to start containers.${NC}"
-            echo "Check your .env file and try again."
-            exit 1
-        fi
-
-        echo ""
-        echo "Waiting for containers to be ready..."
-        sleep 5
     fi
 
     # Run tests
@@ -385,7 +339,6 @@ main() {
     check_agent_tools
     check_non_root
     check_workspace
-    check_opencode_config
     check_allowed_domains
     check_blocked_domains
     check_network_isolation
