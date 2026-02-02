@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 
 ARG OPENCODE_VERSION=latest
 
-# Install dependencies
+# Install dependencies including gosu for proper user switching with TTY support
 RUN apt-get update && apt-get install -y \
     curl \
     git \
@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     dnsutils \
     ca-certificates \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Install opencode

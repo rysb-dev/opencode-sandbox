@@ -85,29 +85,13 @@ if [ "$(id -u)" = "0" ]; then
     # Running as root - set up firewall, then drop to coder user
     setup_firewall
     
-    # Switch to coder user and run the command
+    # Switch to coder user and run the command using gosu
+    # gosu properly handles TTY and signals, unlike su
+    cd /workspace
     if [ $# -eq 0 ]; then
-        exec su -s /bin/bash coder -c "cd /workspace && exec bash"
+        exec gosu coder bash
     else
-        # For commands like "bash -c 'something'", we need to preserve quoting
-        # Write a script that will execute the command properly
-        tmpfile=$(mktemp /tmp/sandbox-cmd.XXXXXX)
-        
-        # Write the command with proper quoting
-        {
-            echo '#!/bin/bash'
-            echo 'cd /workspace'
-            # Use printf %q to properly quote each argument
-            printf 'exec'
-            for arg in "$@"; do
-                printf ' %q' "$arg"
-            done
-            printf '\n'
-        } > "$tmpfile"
-        
-        chmod 755 "$tmpfile"
-        chown coder:coder "$tmpfile"
-        exec su -s /bin/bash coder "$tmpfile"
+        exec gosu coder "$@"
     fi
 else
     # Not running as root - just execute the command
