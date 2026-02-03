@@ -101,6 +101,7 @@ ensure_config() {
 # GitHub (for git operations, Copilot, API)
 .github.com
 .githubusercontent.com
+.githubcopilot.com
 
 # Package registries
 .npmjs.org

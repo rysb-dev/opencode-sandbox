@@ -57,6 +57,7 @@ RUN apt-get update && apt-get install -y \
 # Install uv (Astral) - fast Python package manager
 # Copy from official distroless image (recommended approach)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+RUN uv python install 3.12 3.13 3.14
 
 # Install opencode
 RUN if [ "$OPENCODE_VERSION" = "latest" ]; then \
