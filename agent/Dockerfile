@@ -54,6 +54,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
+# Install uv (Astral) - fast Python package manager
+# Copy from official distroless image (recommended approach)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # Install opencode
 RUN if [ "$OPENCODE_VERSION" = "latest" ]; then \
     curl -fsSL https://opencode.ai/install | bash; \
