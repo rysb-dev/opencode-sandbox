@@ -251,6 +251,10 @@ generate_compose_file() {
     local domains_file="$2"
     local compose_file="$CONFIG_DIR/docker-compose.yml"
 
+    # Get host UID/GID for proper file permission mapping
+    local host_uid=$(id -u)
+    local host_gid=$(id -g)
+
     # Build volume mounts for agent
     local volume_mounts=""
     volume_mounts+="      - ${project_dir}:/workspace:rw"$'\n'
@@ -325,6 +329,9 @@ ${proxy_env}    healthcheck:
   agent:
     build:
       context: ${SCRIPT_DIR}/agent
+      args:
+        - USER_UID=${host_uid}
+        - USER_GID=${host_gid}
     container_name: ${AGENT_CONTAINER}
     stdin_open: true
     tty: true

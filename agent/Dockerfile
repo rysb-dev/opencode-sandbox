@@ -7,6 +7,8 @@
 FROM debian:bookworm-slim
 
 ARG OPENCODE_VERSION=latest
+ARG USER_UID=1000
+ARG USER_GID=1000
 
 # Install system dependencies and development tools
 RUN apt-get update && apt-get install -y \
@@ -61,8 +63,10 @@ RUN if [ "$OPENCODE_VERSION" = "latest" ]; then \
     && mv /root/.local/bin/opencode /usr/local/bin/opencode 2>/dev/null \
     || find /root -name "opencode" -type f -executable 2>/dev/null | head -1 | xargs -I{} mv {} /usr/local/bin/opencode
 
-# Create non-root user
-RUN useradd -m -s /bin/bash coder
+# Create non-root user with host UID/GID
+# Use existing group if GID already exists, otherwise create new group
+RUN (getent group ${USER_GID} || groupadd -g ${USER_GID} coder) && \
+    useradd -m -s /bin/bash -u ${USER_UID} -g ${USER_GID} coder
 
 # Create necessary directories
 RUN mkdir -p /workspace \
@@ -72,14 +76,14 @@ RUN mkdir -p /workspace \
     && mkdir -p /home/coder/.local/state/opencode \
     && mkdir -p /home/coder/.ssh \
     && mkdir -p /home/coder/go \
-    && chown -R coder:coder /workspace /home/coder
+    && chown -R ${USER_UID}:${USER_GID} /workspace /home/coder
 
 # Configure SSH to use proxy for git hosts
 RUN printf '%s\n' \
     'Host github.com gitlab.com bitbucket.org' \
     '    ProxyCommand nc -X connect -x proxy:3128 %h %p' \
     > /home/coder/.ssh/config \
-    && chown coder:coder /home/coder/.ssh/config \
+    && chown ${USER_UID}:${USER_GID} /home/coder/.ssh/config \
     && chmod 600 /home/coder/.ssh/config
 
 # Set working directory
