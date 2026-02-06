@@ -90,8 +90,16 @@ Or directly edit `~/.config/opencode-sandbox/config`:
 # Leading dot matches subdomains: .github.com matches api.github.com
 .anthropic.com
 .openai.com
-.github.com
-.npmjs.org
+github.com
+api.github.com
+codeload.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
+pypi.org
+files.pythonhosted.org
+crates.io
+static.crates.io
+index.crates.io
 
 [filesystem]
 # Additional directories to mount (optional)
@@ -139,10 +147,12 @@ The default configuration allows:
 | Category | Domains |
 |----------|---------|
 | LLM APIs | `.anthropic.com`, `.openai.com` |
-| GitHub | `.github.com`, `.githubusercontent.com` |
-| npm | `.npmjs.org`, `.npmjs.com`, `registry.yarnpkg.com` |
-| Go | `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` |
-| Python | `.pypi.org`, `.pythonhosted.org` |
+| GitHub | `github.com`, `api.github.com`, `codeload.github.com`, `raw.githubusercontent.com`, `objects.githubusercontent.com` |
+| GitHub Copilot | `copilot-proxy.githubusercontent.com`, `origin-tracker.githubusercontent.com`, `.githubcopilot.com` |
+| Python | `pypi.org`, `files.pythonhosted.org` |
+| Rust | `crates.io`, `static.crates.io`, `index.crates.io` |
+
+**Note:** The whitelist is intentionally narrow. Broader wildcards like `.github.com` would allow access to GitHub Pages sites (potentially controlled by anyone), increasing data exfiltration risk.
 
 ## Command Reference
 

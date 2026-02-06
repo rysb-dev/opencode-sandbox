@@ -98,20 +98,30 @@ ensure_config() {
 .anthropic.com
 .openai.com
 
-# GitHub (for git operations, Copilot, API)
-.github.com
-.githubusercontent.com
+# GitHub - narrowed to specific subdomains for git operations
+github.com
+api.github.com
+codeload.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
+
+# GitHub Copilot
+copilot-proxy.githubusercontent.com
+origin-tracker.githubusercontent.com
 .githubcopilot.com
 
-# Package registries
-.npmjs.org
-.npmjs.com
-registry.yarnpkg.com
-proxy.golang.org
-sum.golang.org
-storage.googleapis.com
-.pypi.org
-.pythonhosted.org
+# GitLab (uncomment if needed)
+# gitlab.com
+# .gitlab.com
+
+# Python / pip / PyPI
+pypi.org
+files.pythonhosted.org
+
+# Rust / Cargo / crates.io
+crates.io
+static.crates.io
+index.crates.io
 
 # Add additional domains below (use leading dot for subdomains):
 # .example.com      - matches example.com and *.example.com

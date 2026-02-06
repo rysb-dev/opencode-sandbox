@@ -1,15 +1,13 @@
 # =============================================================================
 # Allowed Domains for OpenCode Sandbox
 # =============================================================================
-# Add one domain per line. Domains with a leading dot (.) will match
-# the domain and all subdomains.
+# This file is a reference copy. At runtime, the actual allowed domains
+# are generated from ~/.config/opencode-sandbox/config and mounted over
+# this file.
 #
-# Example:
-#   .github.com      - matches github.com and *.github.com
+# Format:
+#   .example.com     - matches example.com and all subdomains
 #   api.example.com  - matches only api.example.com
-#
-# To apply changes, rebuild the proxy container:
-#   docker compose build proxy && docker compose up -d
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -19,32 +17,30 @@
 .openai.com
 
 # -----------------------------------------------------------------------------
-# GitHub (for git operations and API access)
+# GitHub - Git operations (HTTPS and SSH) and API
 # -----------------------------------------------------------------------------
-.github.com
-.githubusercontent.com
+github.com
+api.github.com
+codeload.github.com
+raw.githubusercontent.com
+objects.githubusercontent.com
 
 # -----------------------------------------------------------------------------
-# Package Registries (uncomment as needed)
+# GitHub Copilot
 # -----------------------------------------------------------------------------
-# npm / Node.js
-.npmjs.org
-.npmjs.com
-registry.yarnpkg.com
-
-# Go modules
-proxy.golang.org
-sum.golang.org
-storage.googleapis.com
-
-# Python / pip
-.pypi.org
-.pythonhosted.org
-
-# Rust / Cargo
-# .crates.io
-# static.crates.io
+copilot-proxy.githubusercontent.com
+origin-tracker.githubusercontent.com
+.githubcopilot.com
 
 # -----------------------------------------------------------------------------
-# Additional domains (add your own below)
+# Python / pip / PyPI
 # -----------------------------------------------------------------------------
+pypi.org
+files.pythonhosted.org
+
+# -----------------------------------------------------------------------------
+# Rust / Cargo / crates.io
+# -----------------------------------------------------------------------------
+crates.io
+static.crates.io
+index.crates.io
