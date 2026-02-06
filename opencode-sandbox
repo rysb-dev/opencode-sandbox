@@ -57,6 +57,7 @@ show_help() {
     echo "    -u, --update   Update opencode to latest version (same as 'update')"
     echo "    -c, --config   Open configuration file in editor"
     echo "    --no-network   Disable all network access"
+    echo "    --with-ssh     Mount ~/.ssh keys into container (disabled by default)"
     echo ""
     echo -e "${BOLD}CONFIGURATION:${NC}"
     echo "    Edit: $CONFIG_FILE"
@@ -291,8 +292,10 @@ generate_compose_file() {
     [[ -f "$HOME/.gitconfig" ]] && volume_mounts+="      - ${HOME}/.gitconfig:/home/coder/.gitconfig:rw"$'\n'
     [[ -d "$HOME/.config/git" ]] && volume_mounts+="      - ${HOME}/.config/git:/home/coder/.config/git:ro"$'\n'
 
-    # SSH keys (mounted read-only, entrypoint copies with correct permissions)
-    [[ -d "$HOME/.ssh" ]] && volume_mounts+="      - ${HOME}/.ssh:/mnt/ssh:ro"$'\n'
+    # SSH keys (only mounted if --with-ssh is passed)
+    if [[ -d "$HOME/.ssh" ]] && [[ "${WITH_SSH:-false}" == "true" ]]; then
+        volume_mounts+="      - ${HOME}/.ssh:/mnt/ssh:ro"$'\n'
+    fi
 
     # Additional filesystem mounts from config
     for mount in "${FILESYSTEM_MOUNTS[@]}"; do
@@ -628,6 +631,10 @@ main() {
                 ;;
             --no-network)
                 export NO_NETWORK=true
+                shift
+                ;;
+            --with-ssh)
+                export WITH_SSH=true
                 shift
                 ;;
             -*)

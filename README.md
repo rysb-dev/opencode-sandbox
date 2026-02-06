@@ -170,6 +170,7 @@ Options:
   -u, --update       Update opencode to latest version
   -c, --config       Open configuration file in editor
   --no-network       Disable all network access
+  --with-ssh         Mount ~/.ssh keys into container (disabled by default)
 ```
 
 ## How It Works
@@ -189,20 +190,23 @@ The sandbox automatically mounts your existing opencode configuration:
 - `~/.local/share/opencode` - Application data
 - `~/.local/state/opencode` - State data
 - `~/.gitconfig` - Git configuration
-- `~/.ssh` - SSH keys (copied with correct permissions)
 
 This means your API keys, model preferences, and other settings work automatically.
 
 ### Git over SSH
 
-Git SSH operations (clone, fetch, pull, push) work automatically for:
-- `github.com`
-- `gitlab.com`
-- `bitbucket.org`
+Git SSH operations (clone, fetch, pull, push) require the `--with-ssh` flag:
 
-Your SSH keys from `~/.ssh` are automatically copied into the container with correct permissions. The SSH traffic is tunneled through the squid proxy.
+```bash
+opencode-sandbox --with-ssh ~/Projects/myapp
+```
+
+This mounts your `~/.ssh` directory (read-only) and copies keys into the container with correct permissions. SSH traffic is tunneled through the squid proxy.
+
+**Why disabled by default?** SSH keys give the agent ability to authenticate as you to git hosts. If you're concerned about a compromised agent pushing malicious code, use HTTPS git operations instead.
 
 **Requirements:**
+- Pass `--with-ssh` flag
 - Your SSH keys must be in `~/.ssh/` (e.g., `~/.ssh/id_ed25519`)
 - The git host must be in your `[network]` whitelist
 
@@ -281,7 +285,7 @@ docker logs opencode-sandbox-agent
 - Cannot bypass proxy - there's no route to the internet
 - No `NET_ADMIN` or other privileged capabilities required
 - Only your project directory is mounted read-write
-- SSH keys are copied (not mounted) with restricted permissions
+- SSH keys are NOT mounted by default (use `--with-ssh` to enable)
 
 ## License
 
