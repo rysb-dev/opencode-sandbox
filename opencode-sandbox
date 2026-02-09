@@ -572,7 +572,20 @@ stop_sandbox_acp() {
 # -----------------------------------------------------------------------------
 # Cleanup ACP containers on exit
 # -----------------------------------------------------------------------------
+DOCKER_EXEC_PID=""
+WATCHDOG_SCRIPT=""
 cleanup_acp() {
+    # Kill the watchdog script (not needed during normal cleanup)
+    if [[ -n "$WATCHDOG_SCRIPT" ]]; then
+        # Find and kill the watchdog process by script path
+        pkill -f "$WATCHDOG_SCRIPT" 2>/dev/null
+        rm -f "$WATCHDOG_SCRIPT"
+    fi
+    # Kill the docker exec process if still running
+    if [[ -n "$DOCKER_EXEC_PID" ]] && kill -0 "$DOCKER_EXEC_PID" 2>/dev/null; then
+        kill "$DOCKER_EXEC_PID" 2>/dev/null
+        wait "$DOCKER_EXEC_PID" 2>/dev/null
+    fi
     log_info "Shutting down ACP sandbox..." >&2
     stop_sandbox_acp
 }
@@ -624,8 +637,8 @@ run_sandbox_acp() {
         stop_sandbox_acp
     fi
 
-    # Set up cleanup trap — must fire on EXIT, INT, TERM, and PIPE (editor disconnect)
-    trap cleanup_acp EXIT INT TERM PIPE
+    # Set up cleanup trap — must fire on EXIT, INT, TERM, HUP, and PIPE (editor disconnect)
+    trap cleanup_acp EXIT INT TERM HUP PIPE
 
     # Start containers
     log_info "Starting ACP sandbox containers..." >&2
@@ -655,10 +668,33 @@ run_sandbox_acp() {
             "mkdir -p '$(dirname "$project_dir")' && ln -sfn /workspace '$project_dir'" 2>/dev/null
     fi
 
+    # Start a watchdog that monitors this script's PID. If the process is killed
+    # with SIGKILL (which can't be trapped), the watchdog detects the parent is
+    # gone and cleans up the containers. This handles Zed force-killing the subprocess.
+    # The watchdog must run in its own process session so it survives process group kills.
+    local my_pid=$$
+    local watchdog_script
+    watchdog_script=$(mktemp "${TMPDIR:-/tmp}/opencode-watchdog.XXXXXX")
+    cat > "$watchdog_script" << WATCHDOG_EOF
+#!/bin/bash
+while kill -0 $my_pid 2>/dev/null; do
+    sleep 2
+done
+docker compose -f "$compose_file" -p "$COMPOSE_PROJECT_ACP" down --remove-orphans 2>/dev/null
+rm -f "$watchdog_script"
+WATCHDOG_EOF
+    chmod +x "$watchdog_script"
+    # Launch in a new session via perl (setsid not available on macOS)
+    perl -e 'use POSIX; fork and exit; POSIX::setsid(); exec @ARGV' "$watchdog_script" &>/dev/null
+    WATCHDOG_SCRIPT="$watchdog_script"
+
     # Run opencode acp inside the container, piping stdin/stdout transparently.
     # Using docker exec -i (no -t) for clean binary-safe stdin/stdout without TTY.
-    # NOT using exec so the shell traps remain active for cleanup on exit.
-    docker exec -i "$AGENT_CONTAINER_ACP" /entrypoint.sh opencode acp --cwd /workspace
+    # Run in background + wait so that signals (HUP, TERM, etc.) interrupt wait
+    # and the trap can fire to clean up containers.
+    docker exec -i "$AGENT_CONTAINER_ACP" /entrypoint.sh opencode acp --cwd /workspace &
+    DOCKER_EXEC_PID=$!
+    wait "$DOCKER_EXEC_PID" 2>/dev/null
 }
 
 # -----------------------------------------------------------------------------
