@@ -160,6 +160,7 @@ The default configuration allows:
 opencode-sandbox [OPTIONS] [PROJECT_DIR]
 
 Commands:
+  acp [PROJECT_DIR]  Run in ACP mode for editor integration (e.g., Zed)
   shell              Open bash shell in running sandbox
   stop               Stop all sandbox containers
   update             Update opencode to latest version
@@ -214,6 +215,79 @@ This mounts your `~/.ssh` directory (read-only) and copies keys into the contain
 ```bash
 git config --global --add safe.directory /workspace
 ```
+
+## Editor Integration (ACP Mode)
+
+The sandbox supports the [Agent Client Protocol (ACP)](https://agentclientprotocol.com), allowing editors like [Zed](https://zed.dev) to use sandboxed OpenCode as an AI agent.
+
+### How It Works
+
+ACP mode starts the same proxy + agent container stack, but instead of an interactive terminal, it bridges the editor's stdin/stdout to `opencode acp` running inside the container. The editor communicates via JSON-RPC over this pipe while all network isolation remains in effect.
+
+### Zed Editor Setup
+
+Add this to `~/.config/zed/settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "OpenCode (Sandboxed)": {
+      "type": "custom",
+      "command": "opencode-sandbox",
+      "args": ["acp"],
+      "env": {}
+    }
+  }
+}
+```
+
+Options like `--with-ssh` or `--no-network` can be added to the `args` array:
+
+```json
+"args": ["acp", "--with-ssh"]
+```
+
+Then use the command palette action `agent: new thread` in Zed to start a session.
+
+### Manual Usage
+
+```bash
+# Run ACP mode in current directory
+opencode-sandbox acp
+
+# Run ACP mode for a specific project
+opencode-sandbox acp ~/Projects/my-app
+
+# ACP mode with options
+opencode-sandbox acp --with-ssh ~/Projects/my-app
+```
+
+### Model Configuration
+
+Models are configured through OpenCode's own config at `~/.config/opencode/opencode.json` (not through Zed). This config is automatically mounted into the sandbox.
+
+```json
+{
+  "model": "anthropic/claude-sonnet-4-5",
+  "provider": {
+    "anthropic": {
+      "options": {
+        "apiKey": "{env:ANTHROPIC_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+### How Path Mapping Works
+
+Editors send the host machine's project path (e.g., `/Users/you/Projects/myapp`) to OpenCode via ACP. OpenCode then uses that path as the working directory when running tools like bash. Since the project is mounted at `/workspace` inside the container, the sandbox automatically creates a symlink from the host path to `/workspace` so that tool execution works correctly. This is transparent — no configuration needed.
+
+### Notes
+
+- ACP mode uses a separate container set (`opencode-sandbox-acp-*`) so it can run alongside TUI mode
+- Containers start when the editor connects and stop when it disconnects
+- All sandbox config (`[network]`, `[filesystem]`, `[environment]`) applies to ACP mode
 
 ## Verifying Network Isolation
 

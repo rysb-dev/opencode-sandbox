@@ -29,9 +29,10 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
 
-# Container names
+# Container names (overridden with --acp flag)
 PROXY_CONTAINER="opencode-sandbox-proxy"
 AGENT_CONTAINER="opencode-sandbox-agent"
+MODE="tui"
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -306,13 +307,70 @@ print_summary() {
 # Main
 # -----------------------------------------------------------------------------
 
+# ACP-specific: check host path symlink exists
+check_acp_path_symlink() {
+    log_test "Checking ACP host path symlink..."
+
+    # Look for any symlink pointing to /workspace outside of /proc (the host path mapping)
+    local symlinks
+    symlinks=$(agent_exec find / -maxdepth 6 -path /proc -prune -o -type l -lname /workspace -print 2>/dev/null | head -5)
+
+    if [ -n "$symlinks" ]; then
+        log_pass "Host path symlink found: ${symlinks}"
+    else
+        log_skip "No host path symlink found (may not be needed if project dir is /workspace)"
+    fi
+}
+
+# ACP-specific: check JSON-RPC responsiveness
+check_acp_jsonrpc() {
+    log_test "Checking ACP JSON-RPC responsiveness..."
+
+    # Send an initialize request directly to opencode acp inside the container
+    local response
+    response=$(echo '{"jsonrpc":"2.0","id":99,"method":"initialize","params":{"protocolVersion":1,"capabilities":{}}}' \
+        | timeout 15 docker exec -i "$AGENT_CONTAINER" opencode acp --cwd /workspace 2>/dev/null \
+        | head -1)
+
+    if echo "$response" | grep -q '"protocolVersion"'; then
+        log_pass "OpenCode ACP responds to JSON-RPC initialize"
+    else
+        log_fail "OpenCode ACP did not respond to JSON-RPC initialize (response: ${response:-empty})"
+    fi
+}
+
 main() {
+    # Parse arguments
+    for arg in "$@"; do
+        case "$arg" in
+            --acp)
+                MODE="acp"
+                PROXY_CONTAINER="opencode-sandbox-acp-proxy"
+                AGENT_CONTAINER="opencode-sandbox-acp-agent"
+                ;;
+            -h|--help)
+                echo "Usage: ./smoke-test.sh [--acp]"
+                echo ""
+                echo "Options:"
+                echo "  --acp    Test ACP mode containers instead of TUI mode"
+                exit 0
+                ;;
+        esac
+    done
+
     echo "============================================================================="
     echo "                    OpenCode Sandbox Smoke Test"
+    if [ "$MODE" = "acp" ]; then
+        echo "                           (ACP Mode)"
+    fi
     echo "============================================================================="
     echo ""
     echo "This script tests that the sandbox is configured correctly."
-    echo "Make sure the sandbox is running first: opencode-sandbox /path/to/project"
+    if [ "$MODE" = "acp" ]; then
+        echo "Make sure the ACP sandbox is running (e.g., via Zed or opencode-sandbox acp)"
+    else
+        echo "Make sure the sandbox is running first: opencode-sandbox /path/to/project"
+    fi
     echo ""
 
     # Check docker is available
@@ -325,14 +383,19 @@ main() {
     if ! docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" | grep -q .; then
         echo -e "${RED}Error: Sandbox is not running.${NC}"
         echo ""
-        echo "Start the sandbox first:"
-        echo "  opencode-sandbox /path/to/project"
+        if [ "$MODE" = "acp" ]; then
+            echo "Start the ACP sandbox first (e.g., via Zed or):"
+            echo "  opencode-sandbox acp /path/to/project"
+        else
+            echo "Start the sandbox first:"
+            echo "  opencode-sandbox /path/to/project"
+        fi
         echo ""
         echo "Then run this smoke test from another terminal."
         exit 1
     fi
 
-    # Run tests
+    # Run common tests
     check_containers_running
     check_proxy_health
     check_agent_environment
@@ -342,6 +405,12 @@ main() {
     check_allowed_domains
     check_blocked_domains
     check_network_isolation
+
+    # Run ACP-specific tests
+    if [ "$MODE" = "acp" ]; then
+        check_acp_path_symlink
+        check_acp_jsonrpc
+    fi
 
     # Print summary
     print_summary
