@@ -67,6 +67,7 @@ opencode-sandbox ~/Projects/my-app
 
 # Open a shell in the running sandbox (from another terminal)
 opencode-sandbox shell
+opencode-sandbox shell --acp  # for the ACP container
 
 # Stop the sandbox
 opencode-sandbox stop
@@ -161,7 +162,8 @@ opencode-sandbox [OPTIONS] [PROJECT_DIR]
 
 Commands:
   acp [PROJECT_DIR]  Run in ACP mode for editor integration (e.g., Zed)
-  shell              Open bash shell in running sandbox
+  build              Force rebuild Docker images (without starting anything)
+  shell [--acp]      Open bash shell in running sandbox (or ACP sandbox)
   stop               Stop all sandbox containers
   update             Update opencode to latest version
 
@@ -285,7 +287,7 @@ Editors send the host machine's project path (e.g., `/Users/you/Projects/myapp`)
 
 ### Notes
 
-- ACP mode uses a separate container set (`opencode-sandbox-acp-*`) so it can run alongside TUI mode
+- ACP mode uses separate containers (`opencode-sandbox-acp-*`) so it can run alongside TUI mode, but shares the same Docker images
 - Containers start when the editor connects and stop when it disconnects
 - All sandbox config (`[network]`, `[filesystem]`, `[environment]`) applies to ACP mode
 
