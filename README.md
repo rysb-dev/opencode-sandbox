@@ -25,10 +25,10 @@ Run [OpenCode](https://opencode.ai) in a secure, network-isolated Docker environ
 │   │   │       (squid)       │         │     (opencode)      │           │   │
 │   │   │                     │         │                     │           │   │
 │   │   │  Domain whitelist:  │         │  • Node.js          │           │   │
-│   │   │  .anthropic.com    │◄────────│  • Go               │           │   │
-│   │   │  .github.com       │  HTTP    │  • Python           │           │   │
-│   │   │  .npmjs.org        │  PROXY   │  • ripgrep, git...  │           │   │
-│   │   │  ...               │         │                     │           │   │
+│   │   │  .anthropic.com     │◄────────│  • Go               │           │   │
+│   │   │  .github.com        │  HTTP   │  • Python           │           │   │
+│   │   │  .npmjs.org         │  PROXY  │  • ripgrep, git...  │           │   │
+│   │   │  ...                │         │                     │           │   │
 │   │   │                     │         │  /workspace ◄───────┼───────────┼── Project
 │   │   └──────────┬──────────┘         └─────────────────────┘           │   │
 │   │              │                              │                       │   │
