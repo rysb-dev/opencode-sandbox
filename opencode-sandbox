@@ -22,6 +22,11 @@ COMPOSE_PROJECT="opencode-sandbox"
 PROXY_CONTAINER="opencode-sandbox-proxy"
 AGENT_CONTAINER="opencode-sandbox-agent"
 
+# ACP mode constants (separate compose project to allow coexistence with TUI)
+COMPOSE_PROJECT_ACP="opencode-sandbox-acp"
+PROXY_CONTAINER_ACP="opencode-sandbox-acp-proxy"
+AGENT_CONTAINER_ACP="opencode-sandbox-acp-agent"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,13 +46,17 @@ show_help() {
     echo ""
     echo -e "${BOLD}USAGE:${NC}"
     echo "    opencode-sandbox [OPTIONS] [PROJECT_DIR]"
-    echo "    opencode-sandbox shell    Open a bash shell in the running sandbox"
+    echo "    opencode-sandbox acp [PROJECT_DIR]   Run in ACP mode for editor integration"
+    echo "    opencode-sandbox shell               Open a bash shell in the running sandbox"
     echo ""
     echo -e "${BOLD}ARGUMENTS:${NC}"
     echo "    PROJECT_DIR    Directory to mount as workspace (default: current directory)"
     echo ""
     echo -e "${BOLD}COMMANDS:${NC}"
+    echo "    acp            Run in ACP mode (Agent Client Protocol over stdin/stdout)"
+    echo "    build          Force rebuild Docker images (without starting anything)"
     echo "    shell          Open a bash shell in the running sandbox container"
+    echo "    shell --acp    Open a bash shell in the running ACP sandbox container"
     echo "    stop           Stop all sandbox containers"
     echo "    update         Update opencode to the latest version (rebuilds image)"
     echo ""
@@ -68,10 +77,26 @@ show_help() {
     echo -e "${BOLD}EXAMPLES:${NC}"
     echo "    opencode-sandbox                    # Run in current directory"
     echo "    opencode-sandbox ~/Projects/myapp   # Run in specific directory"
+    echo "    opencode-sandbox acp                # ACP mode for editor integration"
+    echo "    opencode-sandbox build              # Rebuild images only"
     echo "    opencode-sandbox shell              # Open shell in running sandbox"
+    echo "    opencode-sandbox shell --acp       # Open shell in running ACP sandbox"
     echo "    opencode-sandbox stop               # Stop all sandbox containers"
     echo "    opencode-sandbox update             # Update opencode to latest"
     echo "    opencode-sandbox --build            # Rebuild images and run"
+    echo ""
+    echo -e "${BOLD}ZED EDITOR INTEGRATION:${NC}"
+    echo "    Add to ~/.config/zed/settings.json:"
+    echo '    {'
+    echo '      "agent_servers": {'
+    echo '        "OpenCode (Sandboxed)": {'
+    echo '          "type": "custom",'
+    echo '          "command": "opencode-sandbox",'
+    echo '          "args": ["acp"],'
+    echo '          "env": {}'
+    echo '        }'
+    echo '      }'
+    echo '    }'
     echo ""
 }
 
@@ -261,7 +286,20 @@ EOF
 generate_compose_file() {
     local project_dir="$1"
     local domains_file="$2"
-    local compose_file="$CONFIG_DIR/docker-compose.yml"
+    local mode="${3:-tui}"  # "tui" (default) or "acp"
+
+    local compose_file
+    local cur_proxy_container
+    local cur_agent_container
+    if [[ "$mode" == "acp" ]]; then
+        compose_file="$CONFIG_DIR/docker-compose-acp.yml"
+        cur_proxy_container="$PROXY_CONTAINER_ACP"
+        cur_agent_container="$AGENT_CONTAINER_ACP"
+    else
+        compose_file="$CONFIG_DIR/docker-compose.yml"
+        cur_proxy_container="$PROXY_CONTAINER"
+        cur_agent_container="$AGENT_CONTAINER"
+    fi
 
     # Get host UID/GID for proper file permission mapping
     local host_uid=$(id -u)
@@ -321,13 +359,28 @@ generate_compose_file() {
         fi
     fi
 
+    # Mode-specific agent settings
+    local agent_tty_settings=""
+    local agent_command=""
+    if [[ "$mode" == "acp" ]]; then
+        # ACP mode: no TTY (would corrupt JSON-RPC), keep-alive so docker exec controls lifecycle
+        agent_tty_settings="    stdin_open: false
+    tty: false
+    command: [\"tail\", \"-f\", \"/dev/null\"]"
+    else
+        # TUI mode: interactive terminal
+        agent_tty_settings="    stdin_open: true
+    tty: true"
+    fi
+
     cat > "$compose_file" << EOF
 # Auto-generated - do not edit directly
 services:
   proxy:
+    image: opencode-sandbox-proxy
     build:
       context: ${SCRIPT_DIR}/proxy
-    container_name: ${PROXY_CONTAINER}
+    container_name: ${cur_proxy_container}
     networks:
       - external
       - internal
@@ -341,14 +394,14 @@ ${proxy_env}    healthcheck:
       start_period: 2s
 
   agent:
+    image: opencode-sandbox-agent
     build:
       context: ${SCRIPT_DIR}/agent
       args:
         - USER_UID=${host_uid}
         - USER_GID=${host_gid}
-    container_name: ${AGENT_CONTAINER}
-    stdin_open: true
-    tty: true
+    container_name: ${cur_agent_container}
+${agent_tty_settings}
     networks:
       - internal
     depends_on:
@@ -384,22 +437,23 @@ build_images() {
     local force="${1:-false}"
     local compose_file="$2"
     local no_cache="${3:-false}"
+    local project="${4:-$COMPOSE_PROJECT}"
 
     # Check if images exist
     local need_build=false
     if [[ "$force" == "true" ]]; then
         need_build=true
-    elif ! docker image inspect "${COMPOSE_PROJECT}-proxy" &>/dev/null || \
-         ! docker image inspect "${COMPOSE_PROJECT}-agent" &>/dev/null; then
+    elif ! docker image inspect "opencode-sandbox-proxy" &>/dev/null || \
+         ! docker image inspect "opencode-sandbox-agent" &>/dev/null; then
         need_build=true
     fi
 
     if [[ "$need_build" == "true" ]]; then
         log_info "Building Docker images..."
         if [[ "$no_cache" == "true" ]]; then
-            docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --no-cache --quiet
+            docker compose -f "$compose_file" -p "$project" build --no-cache --quiet
         else
-            docker compose -f "$compose_file" -p "$COMPOSE_PROJECT" build --quiet
+            docker compose -f "$compose_file" -p "$project" build --quiet
         fi
         log_success "Images built successfully"
     fi
@@ -481,19 +535,32 @@ stop_sandbox() {
 # Attach to running sandbox
 # -----------------------------------------------------------------------------
 attach_shell() {
-    if ! docker ps -q -f "name=${AGENT_CONTAINER}" -f "status=running" &>/dev/null; then
-        log_error "No running sandbox found."
+    local container="$AGENT_CONTAINER"
+    local mode="sandbox"
+
+    if [[ "$1" == "--acp" ]]; then
+        container="$AGENT_CONTAINER_ACP"
+        mode="ACP sandbox"
+    fi
+
+    if ! docker ps -q -f "name=${container}" -f "status=running" &>/dev/null; then
+        log_error "No running ${mode} found."
         echo ""
-        echo "Start a sandbox first with:"
-        echo "  opencode-sandbox [project-directory]"
+        if [[ "$mode" == "ACP sandbox" ]]; then
+            echo "Start an ACP sandbox first with:"
+            echo "  opencode-sandbox acp [project-directory]"
+        else
+            echo "Start a sandbox first with:"
+            echo "  opencode-sandbox [project-directory]"
+        fi
         exit 1
     fi
 
-    log_info "Attaching shell to running sandbox..."
-    log_info "Type 'exit' to close this shell (sandbox will keep running)"
+    log_info "Attaching shell to running ${mode}..."
+    log_info "Type 'exit' to close this shell (${mode} will keep running)"
     echo ""
 
-    docker exec -it "$AGENT_CONTAINER" bash
+    docker exec -it "$container" bash
 }
 
 # -----------------------------------------------------------------------------
@@ -503,6 +570,150 @@ cleanup() {
     echo ""
     log_info "Shutting down sandbox..."
     stop_sandbox
+}
+
+# -----------------------------------------------------------------------------
+# Stop ACP sandbox containers
+# -----------------------------------------------------------------------------
+stop_sandbox_acp() {
+    local compose_file="$CONFIG_DIR/docker-compose-acp.yml"
+
+    if [[ -f "$compose_file" ]]; then
+        log_info "Stopping ACP sandbox containers..." >&2
+        docker compose -f "$compose_file" -p "$COMPOSE_PROJECT_ACP" down --remove-orphans 2>/dev/null || true
+    else
+        docker stop "$AGENT_CONTAINER_ACP" "$PROXY_CONTAINER_ACP" 2>/dev/null || true
+        docker rm "$AGENT_CONTAINER_ACP" "$PROXY_CONTAINER_ACP" 2>/dev/null || true
+    fi
+    log_success "ACP sandbox stopped" >&2
+}
+
+# -----------------------------------------------------------------------------
+# Cleanup ACP containers on exit
+# -----------------------------------------------------------------------------
+DOCKER_EXEC_PID=""
+WATCHDOG_SCRIPT=""
+cleanup_acp() {
+    # Kill the watchdog script (not needed during normal cleanup)
+    if [[ -n "$WATCHDOG_SCRIPT" ]]; then
+        # Find and kill the watchdog process by script path
+        pkill -f "$WATCHDOG_SCRIPT" 2>/dev/null
+        rm -f "$WATCHDOG_SCRIPT"
+    fi
+    # Kill the docker exec process if still running
+    if [[ -n "$DOCKER_EXEC_PID" ]] && kill -0 "$DOCKER_EXEC_PID" 2>/dev/null; then
+        kill "$DOCKER_EXEC_PID" 2>/dev/null
+        wait "$DOCKER_EXEC_PID" 2>/dev/null
+    fi
+    log_info "Shutting down ACP sandbox..." >&2
+    stop_sandbox_acp
+}
+
+# -----------------------------------------------------------------------------
+# Run sandbox in ACP mode (stdin/stdout JSON-RPC bridge for Zed/editors)
+# -----------------------------------------------------------------------------
+run_sandbox_acp() {
+    local project_dir="${1:-$(pwd)}"
+    local force_build="${FORCE_BUILD:-false}"
+    local no_network="${NO_NETWORK:-false}"
+
+    # Resolve to absolute path
+    project_dir=$(cd "$project_dir" 2>/dev/null && pwd) || {
+        log_error "Directory not found: $project_dir"
+        exit 1
+    }
+
+    # All informational output goes to stderr — stdout is reserved for JSON-RPC
+    log_info "ACP mode: bridging editor to sandboxed OpenCode" >&2
+    log_info "Project: $project_dir" >&2
+
+    # Ensure config exists
+    ensure_config
+
+    # Parse config
+    parse_config
+
+    # Handle no-network mode
+    if [[ "$no_network" == "true" ]]; then
+        log_warn "Network access: DISABLED" >&2
+        NETWORK_HOSTS=()
+    fi
+
+    # Generate config files
+    local domains_file
+    domains_file=$(generate_allowed_domains)
+
+    local compose_file
+    compose_file=$(generate_compose_file "$project_dir" "$domains_file" "acp")
+
+    # Build images if needed
+    # Redirect stdout to stderr so build output doesn't corrupt JSON-RPC stream
+    build_images "$force_build" "$compose_file" "false" "$COMPOSE_PROJECT_ACP" 1>&2
+
+    # Stop any existing ACP sandbox
+    if docker ps -q -f "name=${AGENT_CONTAINER_ACP}" &>/dev/null; then
+        log_info "Stopping existing ACP sandbox..." >&2
+        stop_sandbox_acp
+    fi
+
+    # Set up cleanup trap — must fire on EXIT, INT, TERM, HUP, and PIPE (editor disconnect)
+    trap cleanup_acp EXIT INT TERM HUP PIPE
+
+    # Start containers
+    log_info "Starting ACP sandbox containers..." >&2
+    docker compose -f "$compose_file" -p "$COMPOSE_PROJECT_ACP" up -d --quiet-pull 2>/dev/null
+
+    # Wait for agent container to be ready
+    local retries=0
+    while ! docker ps -q -f "name=${AGENT_CONTAINER_ACP}" -f "status=running" &>/dev/null && [[ $retries -lt 30 ]]; do
+        sleep 0.5
+        ((retries++))
+    done
+
+    if ! docker ps -q -f "name=${AGENT_CONTAINER_ACP}" -f "status=running" &>/dev/null; then
+        log_error "ACP agent container failed to start"
+        docker compose -f "$compose_file" -p "$COMPOSE_PROJECT_ACP" logs >&2
+        exit 1
+    fi
+
+    log_success "ACP sandbox ready — piping stdin/stdout to opencode acp" >&2
+
+    # Create a symlink from the host project path to /workspace inside the container.
+    # Editors like Zed send the host path via ACP, and OpenCode uses it as cwd when
+    # spawning tools (bash, etc). Without this symlink, posix_spawn fails with ENOENT
+    # because the host path doesn't exist inside the container.
+    if [[ "$project_dir" != "/workspace" ]]; then
+        docker exec -u root "$AGENT_CONTAINER_ACP" bash -c \
+            "mkdir -p '$(dirname "$project_dir")' && ln -sfn /workspace '$project_dir'" 2>/dev/null
+    fi
+
+    # Start a watchdog that monitors this script's PID. If the process is killed
+    # with SIGKILL (which can't be trapped), the watchdog detects the parent is
+    # gone and cleans up the containers. This handles Zed force-killing the subprocess.
+    # The watchdog must run in its own process session so it survives process group kills.
+    local my_pid=$$
+    local watchdog_script
+    watchdog_script=$(mktemp "${TMPDIR:-/tmp}/opencode-watchdog.XXXXXX")
+    cat > "$watchdog_script" << WATCHDOG_EOF
+#!/bin/bash
+while kill -0 $my_pid 2>/dev/null; do
+    sleep 2
+done
+docker compose -f "$compose_file" -p "$COMPOSE_PROJECT_ACP" down --remove-orphans 2>/dev/null
+rm -f "$watchdog_script"
+WATCHDOG_EOF
+    chmod +x "$watchdog_script"
+    # Launch in a new session via perl (setsid not available on macOS)
+    perl -e 'use POSIX; fork and exit; POSIX::setsid(); exec @ARGV' "$watchdog_script" &>/dev/null
+    WATCHDOG_SCRIPT="$watchdog_script"
+
+    # Run opencode acp inside the container, piping stdin/stdout transparently.
+    # Using docker exec -i (no -t) for clean binary-safe stdin/stdout without TTY.
+    # Run in background + wait so that signals (HUP, TERM, etc.) interrupt wait
+    # and the trap can fire to clean up containers.
+    docker exec -i "$AGENT_CONTAINER_ACP" /entrypoint.sh opencode acp --cwd /workspace &
+    DOCKER_EXEC_PID=$!
+    wait "$DOCKER_EXEC_PID" 2>/dev/null
 }
 
 # -----------------------------------------------------------------------------
@@ -621,12 +832,39 @@ main() {
                 ${EDITOR:-vim} "$CONFIG_FILE"
                 exit 0
                 ;;
+            acp)
+                shift
+                # Collect remaining args for ACP mode (project dir, options)
+                local acp_project_dir=""
+                while [[ $# -gt 0 ]]; do
+                    case "$1" in
+                        --no-network) export NO_NETWORK=true; shift ;;
+                        --with-ssh)   export WITH_SSH=true; shift ;;
+                        -b|--build)   export FORCE_BUILD=true; shift ;;
+                        *)            acp_project_dir="$1"; shift ;;
+                    esac
+                done
+                run_sandbox_acp "$acp_project_dir"
+                exit 0
+                ;;
+            build)
+                ensure_config
+                parse_config
+                local domains_file
+                domains_file=$(generate_allowed_domains)
+                local compose_file
+                compose_file=$(generate_compose_file "$(pwd)" "$domains_file")
+                build_images "true" "$compose_file"
+                exit 0
+                ;;
             shell)
-                attach_shell
+                shift
+                attach_shell "$@"
                 exit 0
                 ;;
             stop)
                 stop_sandbox
+                stop_sandbox_acp 2>/dev/null
                 exit 0
                 ;;
             --no-network)
