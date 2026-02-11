@@ -165,6 +165,13 @@ index.crates.io
 #
 # Note: no_proxy domains will be accessed directly, bypassing the upstream proxy.
 # This is useful for internal/intranet hosts that don't need the corporate proxy.
+#
+# Network MTU (optional - auto-detected from host interface by default)
+# If you're on a VPN and downloads are slow, the auto-detected value should
+# already match your VPN tunnel interface. Set this only if auto-detection
+# doesn't work for your setup.
+# Common values: 1280-1400 (corporate VPN), 1500 (default)
+# mtu=1400
 
 
 [filesystem]
@@ -199,6 +206,7 @@ parse_config() {
     UPSTREAM_PROXY_HOST=""
     UPSTREAM_PROXY_PORT=""
     NO_PROXY_DOMAINS=""
+    CONFIGURED_MTU=""
 
     if [[ ! -f "$CONFIG_FILE" ]]; then
         log_warn "Config file not found: $CONFIG_FILE"
@@ -256,6 +264,9 @@ parse_config() {
                 elif [[ "$line" =~ ^no_proxy[[:space:]]*= ]]; then
                     NO_PROXY_DOMAINS="${line#*=}"
                     NO_PROXY_DOMAINS=$(echo "$NO_PROXY_DOMAINS" | xargs)
+                elif [[ "$line" =~ ^mtu[[:space:]]*= ]]; then
+                    CONFIGURED_MTU="${line#*=}"
+                    CONFIGURED_MTU=$(echo "$CONFIGURED_MTU" | xargs)
                 fi
                 ;;
         esac
@@ -278,6 +289,41 @@ EOF
     done
 
     echo "$domains_file"
+}
+
+# -----------------------------------------------------------------------------
+# Detect network MTU (auto-detect from host or use configured value)
+# -----------------------------------------------------------------------------
+detect_mtu() {
+    # Use configured value if set
+    if [[ -n "$CONFIGURED_MTU" ]]; then
+        echo "$CONFIGURED_MTU"
+        return
+    fi
+
+    local iface=""
+    local mtu=""
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        # macOS: get default route interface (works with VPN utun devices)
+        iface=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+        if [[ -n "$iface" ]]; then
+            mtu=$(ifconfig "$iface" 2>/dev/null | awk '/mtu /{print $NF}')
+        fi
+    else
+        # Linux: get default route interface
+        iface=$(ip route show default 2>/dev/null | awk '{print $5}' | head -1)
+        if [[ -n "$iface" ]]; then
+            mtu=$(ip link show "$iface" 2>/dev/null | awk '/mtu/{print $5}')
+        fi
+    fi
+
+    # Fall back to 1500 if detection fails
+    if [[ -z "$mtu" || ! "$mtu" =~ ^[0-9]+$ ]]; then
+        mtu="1500"
+    fi
+
+    echo "$mtu"
 }
 
 # -----------------------------------------------------------------------------
@@ -304,6 +350,10 @@ generate_compose_file() {
     # Get host UID/GID for proper file permission mapping
     local host_uid=$(id -u)
     local host_gid=$(id -g)
+
+    # Detect network MTU (matches host/VPN interface to avoid fragmentation)
+    local mtu_value
+    mtu_value=$(detect_mtu)
 
     # Build volume mounts for agent
     local volume_mounts=""
@@ -422,9 +472,13 @@ ${volume_mounts}    working_dir: /workspace
 networks:
   external:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "${mtu_value}"
   internal:
     driver: bridge
     internal: true
+    driver_opts:
+      com.docker.network.driver.mtu: "${mtu_value}"
 EOF
 
     echo "$compose_file"
@@ -646,6 +700,13 @@ run_sandbox_acp() {
     local compose_file
     compose_file=$(generate_compose_file "$project_dir" "$domains_file" "acp")
 
+    # Log detected network MTU
+    local detected_mtu
+    detected_mtu=$(detect_mtu)
+    if [[ "$detected_mtu" != "1500" ]]; then
+        log_info "Network MTU: ${detected_mtu} (auto-detected from host interface)" >&2
+    fi
+
     # Build images if needed
     # Redirect stdout to stderr so build output doesn't corrupt JSON-RPC stream
     build_images "$force_build" "$compose_file" "false" "$COMPOSE_PROJECT_ACP" 1>&2
@@ -770,6 +831,13 @@ run_sandbox() {
 
     local compose_file
     compose_file=$(generate_compose_file "$project_dir" "$domains_file")
+
+    # Log detected network MTU
+    local detected_mtu
+    detected_mtu=$(detect_mtu)
+    if [[ "$detected_mtu" != "1500" ]]; then
+        log_info "Network MTU: ${detected_mtu} (auto-detected from host interface)"
+    fi
 
     # Build images if needed
     build_images "$force_build" "$compose_file"
