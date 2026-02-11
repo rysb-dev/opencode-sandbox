@@ -213,11 +213,6 @@ This mounts your `~/.ssh` directory (read-only) and copies keys into the contain
 - Your SSH keys must be in `~/.ssh/` (e.g., `~/.ssh/id_ed25519`)
 - The git host must be in your `[network]` whitelist
 
-**First-time setup:** You may need to add `/workspace` as a safe directory for git:
-```bash
-git config --global --add safe.directory /workspace
-```
-
 ## Editor Integration (ACP Mode)
 
 The sandbox supports the [Agent Client Protocol (ACP)](https://agentclientprotocol.com), allowing editors like [Zed](https://zed.dev) to use sandboxed OpenCode as an AI agent.

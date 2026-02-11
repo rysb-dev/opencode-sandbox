@@ -13,5 +13,8 @@ if [ -d /mnt/ssh ] && [ "$(ls -A /mnt/ssh 2>/dev/null)" ]; then
     chmod 644 ~/.ssh/known_hosts* 2>/dev/null || true
 fi
 
+# Mark /workspace as safe for git (ownership differs due to container mount)
+git config --global --add safe.directory /workspace 2>/dev/null || true
+
 # Execute the command (default: opencode)
 exec "$@"

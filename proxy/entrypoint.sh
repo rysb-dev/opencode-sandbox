@@ -38,7 +38,7 @@ generate_upstream_config() {
 # Auto-generated at container startup
 
 # Define the parent proxy
-cache_peer ${proxy_host} parent ${proxy_port} 0 no-query default
+cache_peer ${proxy_host} parent ${proxy_port} 0 no-query no-digest default
 
 EOF
 
@@ -72,6 +72,9 @@ EOF
     cat >> "$UPSTREAM_CONFIG" << EOF
 # Send all other traffic through the upstream proxy
 never_direct allow all
+
+# Prefer IPv4 DNS (corporate proxies rarely support IPv6)
+dns_v4_first on
 EOF
 
     echo "[proxy] Upstream proxy configuration complete"
