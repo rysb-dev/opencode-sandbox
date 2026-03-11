@@ -221,6 +221,8 @@ The sandbox supports the [Agent Client Protocol (ACP)](https://agentclientprotoc
 
 ACP mode starts the same proxy + agent container stack, but instead of an interactive terminal, it bridges the editor's stdin/stdout to `opencode acp` running inside the container. The editor communicates via JSON-RPC over this pipe while all network isolation remains in effect.
 
+When launched by an editor (where the working directory is typically `/`), the script automatically discovers the project directory by intercepting the ACP `session/new` request, which contains the editor's `cwd`. This ensures only the actual project directory is mounted into the container — no manual path configuration needed.
+
 ### Zed Editor Setup
 
 Add this to `~/.config/zed/settings.json`:
@@ -278,7 +280,7 @@ Models are configured through OpenCode's own config at `~/.config/opencode/openc
 
 ### How Path Mapping Works
 
-Editors send the host machine's project path (e.g., `/Users/you/Projects/myapp`) to OpenCode via ACP. OpenCode then uses that path as the working directory when running tools like bash. Since the project is mounted at `/workspace` inside the container, the sandbox automatically creates a symlink from the host path to `/workspace` so that tool execution works correctly. This is transparent — no configuration needed.
+The editor sends the host machine's project path (e.g., `/Users/you/Projects/myapp`) via the ACP `session/new` request. The sandbox intercepts this to mount only that directory at `/workspace` inside the container, then creates a symlink from the host path to `/workspace` so that OpenCode's tool execution works correctly. This is fully transparent — no configuration needed.
 
 ### Notes
 

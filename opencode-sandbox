@@ -667,19 +667,157 @@ cleanup_acp() {
 # Run sandbox in ACP mode (stdin/stdout JSON-RPC bridge for Zed/editors)
 # -----------------------------------------------------------------------------
 run_sandbox_acp() {
-    local project_dir="${1:-$(pwd)}"
+    local project_dir="${1:-}"
     local force_build="${FORCE_BUILD:-false}"
     local no_network="${NO_NETWORK:-false}"
 
+    # When no explicit directory is given, determine the project directory.
+    # Editors like Zed launch ACP agents with PWD=/ (inheriting the macOS GUI
+    # app cwd) and communicate the real project directory later via the ACP
+    # session/new request's cwd field. In that case, we intercept the ACP
+    # handshake to discover the project directory before starting containers,
+    # so only that directory is mounted into the sandbox.
+    if [[ -z "$project_dir" ]]; then
+        project_dir="$(pwd)"
+    fi
+
+    if [[ "$project_dir" == "/" ]]; then
+        _acp_intercepted_start "$force_build" "$no_network"
+    else
+        # Resolve to absolute path
+        project_dir=$(cd "$project_dir" 2>/dev/null && pwd) || {
+            log_error "Directory not found: $project_dir"
+            exit 1
+        }
+        _acp_direct_start "$project_dir" "$force_build" "$no_network"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# ACP direct start: project directory is known upfront (CLI or PWD)
+# -----------------------------------------------------------------------------
+_acp_direct_start() {
+    local project_dir="$1"
+    local force_build="$2"
+    local no_network="$3"
+
+    log_info "ACP mode: bridging editor to sandboxed OpenCode" >&2
+    log_info "Project: $project_dir" >&2
+
+    _acp_setup_and_start "$project_dir" "$force_build" "$no_network"
+
+    # Pipe stdin/stdout directly to opencode acp
+    docker exec -i "$AGENT_CONTAINER_ACP" /entrypoint.sh opencode acp --cwd /workspace &
+    DOCKER_EXEC_PID=$!
+    wait "$DOCKER_EXEC_PID" 2>/dev/null
+}
+
+# -----------------------------------------------------------------------------
+# ACP intercepted start: discover project dir from ACP session/new request
+# -----------------------------------------------------------------------------
+_acp_intercepted_start() {
+    local force_build="$1"
+    local no_network="$2"
+
+    log_info "ACP mode: waiting for editor to send project directory..." >&2
+
+    # --- Phase 1: Intercept ACP handshake to discover project directory ---
+    # The ACP protocol flow is:
+    #   1. Client sends initialize request
+    #   2. Server responds with initialize result
+    #   3. Client sends initialized notification
+    #   4. Client sends session/new request (contains cwd)
+    # We respond to initialize with a synthetic response so the client
+    # proceeds to send session/new, then we extract the cwd.
+
+    local buffered_messages=()
+    local init_id=""
+    local session_cwd=""
+
+    # Read the initialize request
+    if ! IFS= read -r line; then
+        log_error "Failed to read initialize request from stdin" >&2
+        exit 1
+    fi
+    buffered_messages+=("$line")
+    init_id=$(printf '%s' "$line" | jq -r '.id // 0' 2>/dev/null)
+    log_info "Received initialize request (id=$init_id)" >&2
+
+    # Send a minimal synthetic initialize response so the client continues
+    # the handshake. Only protocolVersion is required for the client to
+    # proceed to sending initialized + session/new. The real agent
+    # capabilities come from OpenCode when we replay the handshake later;
+    # its init response is dropped since the client already received ours.
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"sandbox-init","version":"0"}}}\n' "$init_id"
+
+    # Read subsequent messages until we find session/new with cwd
+    while IFS= read -r line; do
+        buffered_messages+=("$line")
+        local method
+        method=$(printf '%s' "$line" | jq -r '.method // empty' 2>/dev/null)
+
+        if [[ "$method" == "session/new" ]]; then
+            session_cwd=$(printf '%s' "$line" | jq -r '.params.cwd // empty' 2>/dev/null)
+            if [[ -n "$session_cwd" ]]; then
+                log_info "Discovered project directory: $session_cwd" >&2
+                break
+            fi
+        fi
+    done
+
+    if [[ -z "$session_cwd" ]]; then
+        log_error "Failed to extract project directory from ACP handshake" >&2
+        exit 1
+    fi
+
     # Resolve to absolute path
-    project_dir=$(cd "$project_dir" 2>/dev/null && pwd) || {
-        log_error "Directory not found: $project_dir"
+    local project_dir
+    project_dir=$(cd "$session_cwd" 2>/dev/null && pwd) || {
+        log_error "Project directory not found: $session_cwd" >&2
         exit 1
     }
 
-    # All informational output goes to stderr — stdout is reserved for JSON-RPC
-    log_info "ACP mode: bridging editor to sandboxed OpenCode" >&2
-    log_info "Project: $project_dir" >&2
+    # --- Phase 2: Start containers with the discovered project directory ---
+    _acp_setup_and_start "$project_dir" "$force_build" "$no_network"
+
+    # --- Phase 3: Replay buffered messages and forward bidirectionally ---
+    # Use a FIFO to feed buffered messages followed by live stdin to OpenCode.
+    # Filter OpenCode's stdout to drop its initialize response (we already
+    # sent a synthetic one; a duplicate would confuse the client).
+    local acp_fifo
+    acp_fifo=$(mktemp -u "${TMPDIR:-/tmp}/opencode-acp-fifo.XXXXXX")
+    mkfifo "$acp_fifo"
+
+    # Background: OpenCode reads from FIFO, its init response is dropped
+    docker exec -i "$AGENT_CONTAINER_ACP" /entrypoint.sh opencode acp --cwd /workspace < "$acp_fifo" \
+        | awk -v drop_id="$init_id" '
+            !dropped && index($0, "\"id\":" drop_id) && index($0, "\"result\"") {
+                dropped = 1
+                next
+            }
+            { print; fflush() }
+        ' &
+    DOCKER_EXEC_PID=$!
+
+    # Foreground: replay buffered messages then forward live stdin
+    (
+        for msg in "${buffered_messages[@]}"; do
+            printf '%s\n' "$msg"
+        done
+        cat
+    ) > "$acp_fifo" 2>/dev/null || true
+
+    wait "$DOCKER_EXEC_PID" 2>/dev/null
+    rm -f "$acp_fifo"
+}
+
+# -----------------------------------------------------------------------------
+# Shared ACP setup: config, images, containers, watchdog
+# -----------------------------------------------------------------------------
+_acp_setup_and_start() {
+    local project_dir="$1"
+    local force_build="$2"
+    local no_network="$3"
 
     # Ensure config exists
     ensure_config
@@ -737,7 +875,7 @@ run_sandbox_acp() {
         exit 1
     fi
 
-    log_success "ACP sandbox ready — piping stdin/stdout to opencode acp" >&2
+    log_success "ACP sandbox ready — project: $project_dir" >&2
 
     # Create a symlink from the host project path to /workspace inside the container.
     # Editors like Zed send the host path via ACP, and OpenCode uses it as cwd when
@@ -767,14 +905,6 @@ WATCHDOG_EOF
     # Launch in a new session via perl (setsid not available on macOS)
     perl -e 'use POSIX; fork and exit; POSIX::setsid(); exec @ARGV' "$watchdog_script" &>/dev/null
     WATCHDOG_SCRIPT="$watchdog_script"
-
-    # Run opencode acp inside the container, piping stdin/stdout transparently.
-    # Using docker exec -i (no -t) for clean binary-safe stdin/stdout without TTY.
-    # Run in background + wait so that signals (HUP, TERM, etc.) interrupt wait
-    # and the trap can fire to clean up containers.
-    docker exec -i "$AGENT_CONTAINER_ACP" /entrypoint.sh opencode acp --cwd /workspace &
-    DOCKER_EXEC_PID=$!
-    wait "$DOCKER_EXEC_PID" 2>/dev/null
 }
 
 # -----------------------------------------------------------------------------
