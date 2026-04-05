@@ -74,7 +74,7 @@ RUN (getent group ${USER_GID} || groupadd -g ${USER_GID} coder) && \
     useradd -m -s /bin/bash -u ${USER_UID} -g ${USER_GID} coder
 
 # Create necessary directories
-RUN mkdir -p /workspace \
+RUN mkdir -p /workspace /workspace/.venv \
     && mkdir -p /home/coder/.config/opencode \
     && mkdir -p /home/coder/.cache/opencode \
     && mkdir -p /home/coder/.local/share/opencode \

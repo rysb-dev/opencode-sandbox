@@ -174,6 +174,7 @@ Options:
   -c, --config       Open configuration file in editor
   --no-network       Disable all network access
   --with-ssh         Mount ~/.ssh keys into container (disabled by default)
+  --no-venv-isolate  Skip .venv isolation and auto-setup (for Linux hosts)
 ```
 
 ## How It Works
@@ -195,6 +196,21 @@ The sandbox automatically mounts your existing opencode configuration:
 - `~/.gitconfig` - Git configuration
 
 This means your API keys, model preferences, and other settings work automatically.
+
+### Python Virtual Environment Isolation
+
+When running on a macOS host, the project's `.venv/` directory would be mounted into the Linux container with incompatible binaries. The sandbox automatically handles this:
+
+1. **`.venv` shadowing** — An anonymous Docker volume masks the host's `.venv/` so the container maintains its own Linux-native virtual environment
+2. **Auto-setup** — If a `pyproject.toml` is found in the project root, the entrypoint runs `uv sync --all-packages --all-groups` to set up the environment automatically
+
+This is enabled by default. If your host is also Linux (no architecture mismatch), disable it:
+
+```bash
+opencode-sandbox --no-venv-isolate ~/Projects/my-python-app
+```
+
+**Note:** `uv sync` downloads packages through the proxy, so your domain whitelist must include `pypi.org` and `files.pythonhosted.org` (included in the default config).
 
 ### Git over SSH
 
@@ -240,7 +256,7 @@ Add this to `~/.config/zed/settings.json`:
 }
 ```
 
-Options like `--with-ssh` or `--no-network` can be added to the `args` array:
+Options like `--with-ssh`, `--no-network`, or `--no-venv-isolate` can be added to the `args` array:
 
 ```json
 "args": ["acp", "--with-ssh"]

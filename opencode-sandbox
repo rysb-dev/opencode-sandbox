@@ -67,6 +67,7 @@ show_help() {
     echo "    -c, --config   Open configuration file in editor"
     echo "    --no-network   Disable all network access"
     echo "    --with-ssh     Mount ~/.ssh keys into container (disabled by default)"
+    echo "    --no-venv-isolate  Skip .venv isolation and auto-setup (for Linux hosts)"
     echo ""
     echo -e "${BOLD}CONFIGURATION:${NC}"
     echo "    Edit: $CONFIG_FILE"
@@ -359,6 +360,11 @@ generate_compose_file() {
     local volume_mounts=""
     volume_mounts+="      - ${project_dir}:/workspace:rw"$'\n'
 
+    # Shadow host .venv with container-local anonymous volume (cross-platform isolation)
+    if [[ "${VENV_ISOLATE:-true}" == "true" ]]; then
+        volume_mounts+="      - /workspace/.venv"$'\n'
+    fi
+
     # OpenCode config directories
     local opencode_config="$HOME/.config/opencode"
     local opencode_cache="$HOME/.cache/opencode"
@@ -465,6 +471,7 @@ ${agent_tty_settings}
       - NO_PROXY=localhost,127.0.0.1
       - no_proxy=localhost,127.0.0.1
       - TERM=${TERM:-xterm-256color}
+      - VENV_ISOLATE=${VENV_ISOLATE:-true}
 $(for env_var in "${AGENT_ENV_VARS[@]}"; do echo "      - ${env_var}"; done)
     volumes:
 ${volume_mounts}    working_dir: /workspace
@@ -1038,6 +1045,7 @@ main() {
                     case "$1" in
                         --no-network) export NO_NETWORK=true; shift ;;
                         --with-ssh)   export WITH_SSH=true; shift ;;
+                        --no-venv-isolate) export VENV_ISOLATE=false; shift ;;
                         -b|--build)   export FORCE_BUILD=true; shift ;;
                         *)            acp_project_dir="$1"; shift ;;
                     esac
@@ -1071,6 +1079,10 @@ main() {
                 ;;
             --with-ssh)
                 export WITH_SSH=true
+                shift
+                ;;
+            --no-venv-isolate)
+                export VENV_ISOLATE=false
                 shift
                 ;;
             -*)
